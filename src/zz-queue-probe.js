@@ -11,3 +11,4 @@ export const z = 1;
 // line 10
 // line 11
 // line 12
+export const z = 2;
