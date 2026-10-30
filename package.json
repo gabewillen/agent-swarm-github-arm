@@ -1,0 +1,11 @@
+{
+  "name": "quorum-run",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quorum Run, a small arcade puzzle game for the browser, in plain ES modules.",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "serve": "python3 -m http.server 8080"
+  }
+}
