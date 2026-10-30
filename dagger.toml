@@ -1,0 +1,12 @@
+[modules.dang-sdk]
+source = "dagger.io/sdk/dang"
+
+[sdks.dang]
+module = "dang-sdk"
+
+[modules.quorum-ci]
+source = ".dagger/modules/quorum-ci"
+
+[sdks.dang.scopes.".dagger/modules/quorum-ci"]
+is-module = true
+name = "quorum-ci"
