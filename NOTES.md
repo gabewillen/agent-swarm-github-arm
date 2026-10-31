@@ -124,3 +124,21 @@ generator stays playable.
   invariants.js, stats.js) — run `node tests/run.mjs 04 05 06 07 08 09 10 11
   12 13 14 15 17` before pushing; page changes (main.js, index.html) —
   section 23.
+
+## Particles (area 9, agent-46) — semantics for consumers
+
+- `particlesFor(state, seed)` bursts in event order, threading the seed
+  through every draw; thread the returned seed on with `>>> 0` between
+  frames the way `src/main.js` does, and pass it straight back in. Events
+  with no spend return the seed unchanged, so gating on
+  `state.events.length` in the caller is optional.
+- A `conflict` burst fires per conflict whose `ttl` is exactly
+  `CONFLICT_TICKS` — i.e. the fresh ones §6 step 11 made that step; one
+  conflict cell means one burst of 8, not 8 per particle cell.
+- A `pickup` burst colours with the last carried patch (§23); on main the
+  merged implementation falls back to `PALETTE.accent` if `carried` is
+  empty rather than skipping, so hand-built test states stay total.
+- Verification beyond the acceptance bar: `selftest/30-particles.test.mjs`
+  (10 checks, hand-built states, no core dependency) and
+  `node dev/particles-sweep.mjs` (§23 invariants across ~30k seeded bot
+  steps and every burst aged to expiry). Both merged.
