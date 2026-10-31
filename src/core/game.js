@@ -1,91 +1,56 @@
-// The rules (DESIGN.md §5 to §7): the game state, one tick of play, and the
-// events a tick produced. Pure: state in is never mutated, state out is plain
-// JSON, and randomness comes only from the state's seed (§3).
-import {
-  CARRY_MAX, START_LIVES, INVULN_TICKS, CONFLICT_TICKS,
-  PATCH_BASE, SAME_COLOR_BONUS, TIME_BONUS_PER_TICK, COLORS, DIRS, CLOCKWISE,
-} from './constants.js';
-import { rngInt } from './rng.js';
+// The rules (DESIGN.md §5 to §7): init, step, tileAt. Pure: step never
+// changes the state or anything reachable from it, and every state it
+// returns is plain JSON. All randomness comes from the state's seed.
+
+import { LEVELS } from '../data/levels.js';
 import { parseLevel } from './level.js';
+import { rngInt } from './rng.js';
+import {
+  CARRY_MAX, START_LIVES, INVULN_TICKS, CONFLICT_TICKS, PATCH_BASE,
+  SAME_COLOR_BONUS, TIME_BONUS_PER_TICK, COLORS, DIRS, CLOCKWISE,
+} from './constants.js';
 
-// The shipped levels (§10) are another area's module. Default init to them
-// once src/data/levels.js is in place; until then init needs explicit
-// options.levels.
-let LEVELS;
-try {
-  ({ LEVELS } = await import('../data/levels.js'));
-} catch {
-  LEVELS = undefined;
+const OPPOSITE = Object.freeze({ up: 'down', down: 'up', left: 'right', right: 'left' });
+
+// The terrain character at a cell ('#' off the map).
+export function tileAt(state, x, y) {
+  const tiles = state && state.level ? state.level.tiles : undefined;
+  const row = Array.isArray(tiles) ? tiles[y] : undefined;
+  return typeof row === 'string' && Number.isInteger(x) && x >= 0 && x < row.length ? row[x] : '#';
 }
 
-// The direction opposite a drift's direction (§6 step 11).
-const REVERSE = { up: 'down', down: 'up', left: 'right', right: 'left' };
-
-// The terrain character of a cell, '#' where the map has nothing.
-function tileIn(level, x, y) {
-  const row = level.tiles[y];
-  if (row === undefined || x < 0 || x >= row.length) return '#';
-  return row[x];
-}
-
-// Whether the player may step onto a cell: not a wall, not a hold or the
-// exit unless open, and no conflict on it (§6 step 6).
-function playerCanEnter(level, x, y, open, conflicts) {
-  const t = tileIn(level, x, y);
-  if (t === '#') return false;
-  if (!open && (t === 'H' || t === 'X')) return false;
-  return !conflicts.some((c) => c.x === x && c.y === y);
-}
-
-// Whether a drift may step onto a cell: not a wall, never a hold or the
-// exit (open or not), and no conflict on it (§6 step 10).
-function driftCanEnter(level, x, y, conflicts) {
-  const t = tileIn(level, x, y);
-  if (t === '#' || t === 'H' || t === 'X') return false;
-  return !conflicts.some((c) => c.x === x && c.y === y);
-}
-
-// Load a level into a state (§5): fresh parsed level, the player at its
-// start, one patch per spawn with colours drawn in reading order, copies of
-// the level's drifts, and the per-level counters reset. Keeps score, lives,
-// tick, and the PRNG state.
-function loadLevel(state, def) {
-  const level = parseLevel(def);
-  let seed = state.seed;
-  const patches = level.spawns.map((sp) => {
-    const draw = rngInt(seed, COLORS);
-    seed = draw.seed;
-    return { x: sp.x, y: sp.y, color: draw.value };
-  });
-  return {
-    ...state,
+// Build the per-level fields of a state for levels[levelIndex], drawing
+// one fresh patch colour per spawn point from the state's seed.
+function loadLevelInto(s) {
+  const level = parseLevel(s.levels[s.levelIndex]);
+  const next = {
+    ...s,
     level,
-    levelTicks: 0,
-    player: { x: level.start.x, y: level.start.y },
+    player: { ...level.start },
     carried: [],
-    patches,
-    drifts: level.drifts.map((d) => ({ ...d })),
+    patches: [],
+    drifts: level.drifts.map((d) => ({ x: d.x, y: d.y, dir: d.dir })),
     conflicts: [],
     merges: 0,
     open: false,
     invuln: 0,
-    seed,
+    levelTicks: 0,
   };
+  let seed = next.seed;
+  next.patches = level.spawns.map((p) => {
+    const r = rngInt(seed, COLORS);
+    seed = r.seed;
+    return { x: p.x, y: p.y, color: r.value };
+  });
+  next.seed = seed;
+  return next;
 }
 
-// init(seed, options) returns the first state (§5). options.levels defaults
-// to the shipped LEVELS; options.level to index 0.
-export function init(seed, options) {
-  const opts = options ?? {};
-  const levels = opts.levels ?? LEVELS;
-  const levelIndex = opts.level ?? 0;
-  if (!Array.isArray(levels) || levels.length === 0) {
-    throw new RangeError('init: no levels (the shipped src/data/levels.js is unavailable)');
-  }
-  if (!Number.isInteger(levelIndex) || levelIndex < 0 || levelIndex >= levels.length) {
-    throw new RangeError('init: level index ' + levelIndex + ' is not within 0..' + (levels.length - 1));
-  }
-  const base = {
+// init(seed, options): the first state.
+export function init(seed, options = {}) {
+  const levels = options.levels !== undefined ? options.levels : LEVELS;
+  const levelIndex = options.level !== undefined ? options.level : 0;
+  return loadLevelInto({
     seed: seed >>> 0,
     tick: 0,
     levelTicks: 0,
@@ -96,89 +61,73 @@ export function init(seed, options) {
     status: 'playing',
     paused: false,
     events: [],
-  };
-  return loadLevel(base, levels[levelIndex]);
+  });
 }
 
-// The terrain character at a cell, '#' outside the map (§5).
-export function tileAt(state, x, y) {
-  return tileIn(state.level, x, y);
-}
+// step(state, input): the next state (§6, in order).
+export function step(state, input) {
+  // 1. A game that is not playing no longer changes.
+  if (!state) return state;
+  if (state.status !== 'playing') return { ...state, events: [] };
 
-// A missing or null input, or a missing field, means no move and no pause
-// (§6); anything else that is not a known direction is no move either.
-function readInput(input) {
-  const nothing = { move: null, pause: false };
-  if (input === null || input === undefined || typeof input !== 'object') return nothing;
-  const move = input.move !== null && input.move !== undefined && DIRS[input.move] ? input.move : null;
-  return { move, pause: input.pause === true };
-}
-
-// step(state, input) returns the next state and never changes its argument
-// (§6). One step, in order:
-//   1 not playing   2 pause flips   3 paused   4 ticks   5 conflicts age
-//   6 the player moves   7 pickup   8 merge   9 exit (ends the step)
-//   10 drifts move   11 drift collisions   12 hits   13 spawns
-export function step(prev, input) {
-  // 1. Nothing moves in a game that is won or lost.
-  if (prev.status !== 'playing') return { ...prev, events: [] };
-
-  const { move, pause } = readInput(input);
-
-  // 2. A pause input flips paused and ends the step.
-  if (pause) {
-    const paused = !prev.paused;
-    return { ...prev, paused, events: [paused ? 'pause' : 'resume'] };
+  const inMove = input && typeof input === 'object' && DIRS[input.move] ? input.move : null;
+  const inPause = input && typeof input === 'object' && input.pause === true;
+  // 2. A pause flips paused and nothing else.
+  if (inPause) {
+    return { ...state, paused: !state.paused, events: [state.paused ? 'resume' : 'pause'] };
   }
+  // 3. A paused game does nothing.
+  if (state.paused) return { ...state, events: [] };
 
-  // 3. A paused game ignores the tick.
-  if (prev.paused) return { ...prev, events: [] };
+  const level = state.level;
+  const levels = state.levels;
+  const levelIndex = state.levelIndex;
 
-  const level = prev.level;
+  // 4. The tick and the level tick grow by one; events start empty.
+  const tick = state.tick + 1;
+  const levelTicks = state.levelTicks + 1;
   const events = [];
 
-  // 4. Ticks grow by one.
-  const tick = prev.tick + 1;
-  const levelTicks = prev.levelTicks + 1;
-  let score = prev.score;
-  let merges = prev.merges;
-  let open = prev.open;
-  let status = prev.status;
-  let invuln = prev.invuln;
-  let lives = prev.lives;
-  let seed = prev.seed;
+  // 5. Conflicts age: each ttl drops by one, and conflicts at 0 go.
+  const conflicts = [];
+  for (const c of state.conflicts) {
+    const ttl = (typeof c.ttl === 'number' ? c.ttl : 0) - 1;
+    if (ttl > 0) conflicts.push({ x: c.x, y: c.y, ttl });
+  }
+  const onConflict = (x, y) => conflicts.some((c) => c.x === x && c.y === y);
 
-  // 5. Conflicts age; conflicts at 0 go.
-  let conflicts = prev.conflicts
-    .map((c) => ({ ...c, ttl: c.ttl - 1 }))
-    .filter((c) => c.ttl > 0);
-
-  // 6. The player moves one cell when the target is passable.
-  const oldX = prev.player.x;
-  const oldY = prev.player.y;
-  let px = oldX;
-  let py = oldY;
-  if (move !== null) {
-    const [dx, dy] = DIRS[move];
-    if (playerCanEnter(level, oldX + dx, oldY + dy, open, conflicts)) {
-      px = oldX + dx;
-      py = oldY + dy;
+  // 6. The player moves one cell when the target is passable to the player.
+  const playerBefore = { ...state.player };
+  let player = { ...state.player };
+  if (inMove) {
+    const [dx, dy] = DIRS[inMove];
+    const x = state.player.x + dx;
+    const y = state.player.y + dy;
+    const t = tileAt(state, x, y);
+    if (t !== '#' && (t === '.' || t === 'M' || ((t === 'H' || t === 'X') && state.open))
+      && !onConflict(x, y)) {
+      player = { x, y };
     }
   }
 
-  // 7. Pickup: a patch underfoot fills a hand (up to CARRY_MAX).
-  let carried = prev.carried;
-  let patches = prev.patches;
-  const underfoot = patches.findIndex((p) => p.x === px && p.y === py);
-  if (underfoot >= 0 && carried.length < CARRY_MAX) {
-    carried = [...carried, patches[underfoot].color];
-    patches = patches.filter((_, i) => i !== underfoot);
-    events.push('pickup');
+  // 7. Pickup: the patch under the player leaves the floor, ordered.
+  let carried = [...state.carried];
+  let patches = state.patches.map((p) => ({ x: p.x, y: p.y, color: p.color }));
+  if (carried.length < CARRY_MAX) {
+    const i = patches.findIndex((p) => p.x === player.x && p.y === player.y);
+    if (i >= 0) {
+      carried.push(patches[i].color);
+      patches.splice(i, 1);
+      events.push('pickup');
+    }
   }
 
-  // 8. Merge on a merge pad: base points by size, a bonus for a
-  //    same-colour merge, the quorum opens the level.
-  if (tileIn(level, px, py) === 'M' && carried.length > 0) {
+  // 8. Merge: patches on a merge pad score, count, and may open the level.
+  let score = state.score;
+  let merges = state.merges;
+  let open = state.open;
+  const here = tileAt(state, player.x, player.y);
+  if (here === 'M' && carried.length > 0) {
     const n = carried.length;
     score += PATCH_BASE * n * n;
     if (n >= 2 && carried.every((c) => c === carried[0])) score += SAME_COLOR_BONUS * n;
@@ -191,69 +140,93 @@ export function step(prev, input) {
     }
   }
 
-  // 9. The exit ships the level: a time bonus under par, then the next
-  //    level loads, or the game is won. Either way the step ends here.
-  if (open && tileIn(level, px, py) === 'X') {
+  // 9. Exit: an open exit ships the level, or wins the game.
+  if (open && here === 'X') {
     score += Math.max(0, level.par - levelTicks) * TIME_BONUS_PER_TICK;
-    if (prev.levelIndex + 1 < prev.levels.length) {
-      events.push('level');
-      return loadLevel(
-        { ...prev, events, tick, levelTicks, score, levelIndex: prev.levelIndex + 1 },
-        prev.levels[prev.levelIndex + 1],
-      );
+    if (levelIndex + 1 < levels.length) {
+      const fresh = loadLevelInto({
+        ...state,
+        tick,
+        seed: state.seed,
+        score,
+        lives: state.lives,
+        status: 'playing',
+        paused: false,
+        levelIndex: levelIndex + 1,
+        events: ['level'],
+      });
+      return fresh;
     }
-    events.push('won');
-    return { ...prev, events, tick, levelTicks, score, status: 'won' };
+    return {
+      ...state,
+      score,
+      player,
+      carried,
+      patches,
+      status: 'won',
+      paused: false,
+      events: ['won'],
+    };
   }
 
-  // 10. Drifts move on their tick, each in turn clockwise from its own
-  //     direction, ignoring the player, patches, and each other.
-  let drifts = prev.drifts;
-  const prevDrifts = prev.drifts;
-  if (tick % level.driftPeriod === 0) {
-    const hasConflictAt = (x, y) => conflicts.some((c) => c.x === x && c.y === y);
-    drifts = prevDrifts.map((d) => {
-      const from = CLOCKWISE.indexOf(d.dir);
-      for (let i = 0; i < 4; i++) {
-        const dir = CLOCKWISE[(from + i) % 4];
+  // 10. Drifts move on their period, in array order, clockwise fallback.
+  let drifts;
+  const driftsMoved = tick % level.driftPeriod === 0;
+  if (driftsMoved) {
+    drifts = state.drifts.map((d) => {
+      const start = Math.max(0, CLOCKWISE.indexOf(d.dir));
+      for (let k = 0; k < CLOCKWISE.length; k++) {
+        const dir = CLOCKWISE[(start + k) % CLOCKWISE.length];
         const [dx, dy] = DIRS[dir];
-        if (driftCanEnter(level, d.x + dx, d.y + dy, conflicts)) {
-          return { x: d.x + dx, y: d.y + dy, dir };
-        }
+        const x = d.x + dx;
+        const y = d.y + dy;
+        const t = tileAt(state, x, y);
+        if (t === '#' || t === 'H' || t === 'X') continue;
+        if (onConflict(x, y)) continue;
+        return { x, y, dir };
       }
       return { x: d.x, y: d.y, dir: d.dir };
     });
+  } else {
+    drifts = state.drifts.map((d) => ({ x: d.x, y: d.y, dir: d.dir }));
+  }
 
-    // 11. Two or more drifts on a cell, in reading order, reverse and
-    //     leave a conflict there.
-    const byCell = new Map();
-    for (const d of drifts) {
-      const key = d.y + ',' + d.x;
-      const list = byCell.get(key);
-      if (list) list.push(d);
-      else byCell.set(key, [d]);
-    }
-    const cells = [...byCell.keys()].map((k) => k.split(',').map(Number));
-    cells.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    for (const [cy, cx] of cells) {
-      const list = byCell.get(cy + ',' + cx);
-      if (list.length < 2) continue;
-      for (const d of list) d.dir = REVERSE[d.dir];
-      if (!hasConflictAt(cx, cy)) conflicts = [...conflicts, { x: cx, y: cy, ttl: CONFLICT_TICKS }];
-      events.push('conflict');
+  // 11. Collisions, only on a tick when drifts moved, in reading order.
+  if (driftsMoved) {
+    for (let y = 0; y < level.height; y++) {
+      for (let x = 0; x < level.width; x++) {
+        const group = drifts.filter((d) => d.x === x && d.y === y);
+        if (group.length < 2) continue;
+        for (const d of group) {
+          if (OPPOSITE[d.dir]) d.dir = OPPOSITE[d.dir];
+        }
+        if (!conflicts.some((c) => c.x === x && c.y === y)) {
+          conflicts.push({ x, y, ttl: CONFLICT_TICKS });
+        }
+        events.push('conflict');
+      }
     }
   }
 
-  // 12. Hits: an invulnerable player just spends a tick of immunity;
-  //     otherwise a drift on the player's cell, or a drift that swapped
-  //     cells with the player this step, is a hit — a drop while carrying,
-  //     a lost life (back to the start) when not, and lost at zero lives.
+  // 12. Hits: invulnerability ticks down, otherwise the player is hit.
+  let invuln = state.invuln;
+  let lives = state.lives;
+  let status = 'playing';
   if (invuln > 0) {
     invuln -= 1;
   } else {
-    const hit = drifts.some((d, i) =>
-      (d.x === px && d.y === py) ||
-      (d.x === oldX && d.y === oldY && prevDrifts[i].x === px && prevDrifts[i].y === py));
+    let hit = drifts.some((d) => d.x === player.x && d.y === player.y);
+    if (!hit) {
+      for (let i = 0; i < drifts.length; i++) {
+        const d = drifts[i];
+        const before = state.drifts[i];
+        if (d.x === playerBefore.x && d.y === playerBefore.y
+          && before && before.x === player.x && before.y === player.y) {
+          hit = true;
+          break;
+        }
+      }
+    }
     if (hit) {
       if (carried.length > 0) {
         carried = [];
@@ -266,48 +239,48 @@ export function step(prev, input) {
           status = 'lost';
           events.push('lost');
         } else {
-          px = level.start.x;
-          py = level.start.y;
+          player = { ...level.start };
           invuln = INVULN_TICKS;
         }
       }
     }
   }
 
-  // 13. Spawns: a patch comes back on a free spawn point, point first,
-  //     then colour, in the seed's order.
-  if (status === 'playing' &&
-      levelTicks % level.spawnEvery === 0 &&
-      patches.length + carried.length < level.spawns.length) {
-    const hasPatchAt = (x, y) => patches.some((p) => p.x === x && p.y === y);
-    const hasDriftAt = (x, y) => drifts.some((d) => d.x === x && d.y === y);
-    const free = level.spawns.filter((sp) =>
-      !hasPatchAt(sp.x, sp.y) && !(sp.x === px && sp.y === py) && !hasDriftAt(sp.x, sp.y));
+  // 13. Spawns, at most one patch per step, from the seed.
+  let seed = state.seed;
+  if (status === 'playing' && levelTicks % level.spawnEvery === 0
+    && patches.length + carried.length < level.spawns.length) {
+    const onPatch = (sx, sy) => patches.some((p) => p.x === sx && p.y === sy);
+    const onDrift = (sx, sy) => drifts.some((d) => d.x === sx && d.y === sy);
+    const free = level.spawns.filter((p) => !onPatch(p.x, p.y) && !onDrift(p.x, p.y)
+      && !(player.x === p.x && player.y === p.y));
     if (free.length > 0) {
-      const point = rngInt(seed, free.length);
-      const colour = rngInt(point.seed, COLORS);
-      seed = colour.seed;
-      patches = [...patches, { x: free[point.value].x, y: free[point.value].y, color: colour.value }];
+      const spot = rngInt(seed, free.length);
+      const color = rngInt(spot.seed, COLORS);
+      const chosen = free[spot.value];
+      patches = [...patches, { x: chosen.x, y: chosen.y, color: color.value }];
+      seed = color.seed;
       events.push('spawn');
     }
   }
 
   return {
-    ...prev,
-    events,
+    ...state,
+    seed,
     tick,
     levelTicks,
-    score,
-    merges,
-    open,
-    status,
-    invuln,
-    lives,
-    seed,
-    player: { x: px, y: py },
+    player,
     carried,
     patches,
-    conflicts,
     drifts,
+    conflicts,
+    score,
+    lives,
+    merges,
+    open,
+    invuln,
+    status,
+    paused: false,
+    events,
   };
 }
