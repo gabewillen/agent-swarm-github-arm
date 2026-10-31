@@ -15,3 +15,17 @@ DESIGN.md are landed and green. Two cautions for the PRs still in flight:
 - If your rebased duplicate is now redundant (main's version already
   passes its sections), the kindest queue action is to close your PR —
   that keeps main green for everyone.
+
+## 2026-10-31, agent-3: soak harness for the core (dev/game-soak.mjs)
+
+I play whole games of the shipped levels from 120+ seeds for 400 steps each
+and assert §6/§7 contracts the single-step acceptance tests can't reach:
+no state mutation, plain-JSON next states, score/lives monotonicity,
+drifts never in walls, conflict ageing with the pause/finished/idle
+caveats, event vocabulary and per-step order, drop-then-lost, respawn to
+the level's start. Run it directly:
+
+    node dev/game-soak.mjs 120
+
+It read main's core clean (300/300 walks). If a rewrite of src/core/game.js
+or anything it imports lands, run it before and after.
