@@ -1,266 +1,239 @@
-// Quorum Run — the bot (§9): an autopilot that plays the game.
+// Quorum Run — the autopilot (DESIGN.md §9).
 //
-// `botInput(state)` returns an input `{ move, pause: false }` for the
-// state. It is pure (it changes neither `state` nor anything in it),
-// deterministic (no randomness, no clock), and imports nothing, so it
-// rides on the state shape of §5 and the rules of §6 alone.
-//
-// How it plays, each time it is asked:
-//   1. Predict drifts. The step about to happen has already grown
-//      `tick` by one (§6 step 4), so the drifts move when
-//      `(state.tick + 1) % driftPeriod === 0`. Each drift on its own
-//      tries its direction and then the next directions clockwise until
-//      one is passable, and stands when none is (§6 step 10).
-//   2. Pick one goal cell by priority:
-//        - when `open`: the exit, merging carried patches first;
-//        - else with CARRY_MAX carried: the nearest merge pad;
-//        - else the nearest reachable lying patch;
-//        - else carrying something: the nearest merge pad;
-//        - else a spawn point to wait at (spawns churn in every
-//          `spawnEvery` ticks), and a spawn the player sits on is not
-//          one (spawns skip the player's cell, §6 step 13);
-//        - else the nearest merge pad, or stand still.
-//   3. Flood the grid backward from the goal with BFS over cells
-//      passable to the player (§6 step 6: no wall, holds and the exit
-//      only when open, and no conflict — conflicts age at the head of
-//      the step, so one at ttl 1 is already gone).
-//   4. Score the five possible inputs — four moves and no move — and
-//      take the safest: a move that would be hit, drop, or lose (§6
-//      step 12) loses to any safer one; among equally safe ones the
-//      shortest path to the goal wins, with a small penalty for cells
-//      a drift sits on or could walk into breaking the ties.
+// `botInput(state)` returns `{ move, pause: false }` for a state, pure and
+// deterministic: it reads the state, draws no randomness, and touches
+// nothing global. Plan of play: a breadth-first field from the player picks
+// what to walk to (the exit once it is open, a merge pad with full hands,
+// otherwise the nearest patch to keep filling up, or an anchor near a free
+// spawn while nothing fetchable is around); a second field from the chosen
+// goal gives the descent step; a per-step drift-risk filter keeps the bot
+// off cells a drift holds or will hold, with an urgent dodge when a drift
+// is about to land on the player.
 
-const REST = { move: null, pause: false };
-const CARRY_MAX = 3;                                             // §2
-const DIRS = { up: [0, -1], right: [1, 0], down: [0, 1], left: [-1, 0] }; // §2
-const CLOCKWISE = ['up', 'right', 'down', 'left'];               // §2
-const CANDIDATES = ['up', 'right', 'down', 'left', null];
+import { CARRY_MAX, DIRS, CLOCKWISE } from './constants.js';
 
-// How badly a cost penalty weighs one risky cell against path length.
-const ON_DRIFT = 3;   // a cell a drift may be standing on right away
-// The rest are relative shrugs: weights make detours longer than bold
-// straight routes only when the bold route sits under a drifting nose.
-const COULD_MOVE_TO = 1.5; // the cell a drift most likely walks to
-const COULD_TURN_TO = 0.5; // a further turn a drift could still take
-const OFF_GRID = 1e6; // stands in for a goal that is simply not reachable
+const NONE = { move: null, pause: false };
 
-// How each of the five possible inputs ranks when unsafe, lower better.
-const DROP = 1;          // carrying: the patches scatter, life stands
-const HIT = 2;           // empty-handed: a life goes
-const LOST = 3;          // the last life goes
+// ---- terrain -------------------------------------------------------------
+
+function tileAt(level, x, y) {
+  const rows = level.tiles;
+  const row = y >= 0 && y < rows.length ? rows[y] : null;
+  return row && x >= 0 && x < row.length ? row[x] : '#';
+}
+
+// Cells a drift can move on: never walls, holds, or the exit (open or not).
+function driftPassable(t) {
+  return t !== '#' && t !== 'H' && t !== 'X';
+}
+
+// Cells the player may cross: holds and the passable only once open.
+function playerPassable(t, open) {
+  return t !== '#' && (open || (t !== 'H' && t !== 'X'));
+}
+
+// ---- breadth-first fields ------------------------------------------------
+
+// Distances from one source cell over a nav grid; unreachable stays -1.
+function fieldFrom(nav, width, height, sx, sy) {
+  const dist = new Int16Array(width * height).fill(-1);
+  const start = sy * width + sx;
+  if (sx < 0 || sx >= width || sy < 0 || sy >= height || !nav[start]) return dist;
+  dist[start] = 0;
+  const queue = [start];
+  for (let head = 0; head < queue.length; head++) {
+    const here = queue[head];
+    const d = dist[here] + 1;
+    const x = here % width;
+    const y = (here - x) / width;
+    for (const dir of CLOCKWISE) {
+      const nx = x + DIRS[dir][0];
+      const ny = y + DIRS[dir][1];
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const ni = ny * width + nx;
+      if (nav[ni] && dist[ni] < 0) {
+        dist[ni] = d;
+        queue.push(ni);
+      }
+    }
+  }
+  return dist;
+}
+
+// ---- drift prediction ----------------------------------------------------
+
+// Where a drift will stand next tick if drifts move: its direction, then
+// clockwise, to the first target passable to a drift (not a wall, hold, or
+// exit) with no conflict on it. With no passable direction it stays.
+function driftNextCell(level, conflicts, drift) {
+  const width = level.width;
+  const facing = CLOCKWISE.indexOf(drift.dir);
+  for (let i = 0; i < 4; i++) {
+    const dir = CLOCKWISE[(facing + i) % 4];
+    const nx = drift.x + DIRS[dir][0];
+    const ny = drift.y + DIRS[dir][1];
+    if (!driftPassable(tileAt(level, nx, ny))) continue;
+    if (conflicts.has(ny * width + nx)) continue;
+    return ny * width + nx;
+  }
+  return drift.y * width + drift.x;
+}
+
+// ---- goal picking --------------------------------------------------------
+
+function cellsOf(level, ch) {
+  const width = level.width;
+  const out = [];
+  for (let y = 0; y < level.height; y++) {
+    const row = level.tiles[y];
+    for (let x = 0; x < row.length; x++) if (row[x] === ch) out.push(y * width + x);
+  }
+  return out;
+}
+
+// The reachable target closest to the player (ties: earlier in the list).
+function nearestReachable(dist, cells) {
+  let best = -1;
+  let bestDist = -1;
+  for (const cell of cells) {
+    const d = dist[cell];
+    if (d < 0) continue;
+    if (best < 0 || d < bestDist) {
+      best = cell;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+// ---- one input -----------------------------------------------------------
 
 export function botInput(state) {
-  if (!state || !state.level || !state.player || state.status !== 'playing' || state.paused) {
-    return REST;
-  }
-  const tiles = state.level.tiles || [];
-  const H = tiles.length;
-  let W = 0;
-  for (let y = 0; y < H; y++) if (tiles[y].length > W) W = tiles[y].length;
-  if (W === 0 || H === 0) return REST;
-
+  if (!state || state.status !== 'playing' || state.paused) return NONE;
+  const level = state.level;
+  if (!level || level.width <= 0 || level.height <= 0) return NONE;
+  const width = level.width;
+  const height = level.height;
   const open = !!state.open;
-  const carried = state.carried || [];
-  const patches = state.patches || [];
-  const drifts = state.drifts || [];
-  const conflicts = state.conflicts || [];
-  const px = state.player.x, py = state.player.y;
+  const player = state.player;
+  const playerCell = player.y * width + player.x;
 
-  // The terrain character of a cell, '#' outside the map (§5 tileAt).
-  const tileAt = (x, y) => {
-    if (y < 0 || y >= H) return '#';
-    const row = tiles[y];
-    return x < 0 || x >= row.length ? '#' : row[x];
-  };
+  // Live conflicts block everyone.
+  const conflicts = new Set();
+  for (const c of state.conflicts) conflicts.add(c.y * width + c.x);
+  const driftCells = new Set();
+  for (const d of state.drifts) driftCells.add(d.y * width + d.x);
 
-  // Conflicts age at the head of the step (§6 step 5), before anything
-  // moves, so only ttl greater than 1 is still blocking through it.
-  const blocked = new Array(W * H).fill(false);
-  for (const c of conflicts) {
-    if (c && c.ttl > 1 && c.x >= 0 && c.x < W && c.y >= 0 && c.y < H) {
-      blocked[c.y * W + c.x] = true;
+  // What the drifts do on the tick after this input: drifts move when the
+  // tick that is about to pass divides by driftPeriod (§6 step 10).
+  const driftPeriod = level.driftPeriod;
+  const willMove = driftPeriod > 0 && (state.tick + 1) % driftPeriod === 0;
+  const nextCells = new Set();
+  const swaps = new Set(); // drift origins that will swap with the player
+  if (willMove) {
+    for (const d of state.drifts) {
+      const next = driftNextCell(level, conflicts, d);
+      nextCells.add(next);
+      if (next === playerCell) swaps.add(d.y * width + d.x);
     }
   }
 
-  // Cells the player may move through (§6 step 6): no wall, holds and
-  // the exit only when open, no blocking conflict.
-  const playerPass = (x, y) => {
-    const t = tileAt(x, y);
-    if (t === '#') return false;
-    if (t === 'H' || t === 'X') return open;
-    return !blocked[y * W + x];
-  };
-  // Cells a drift may move through (§6 step 10): never a wall, never a
-  // hold, never the exit — open or not.
-  const driftPass = (x, y) => {
-    const t = tileAt(x, y);
-    if (t === '#' || t === 'H' || t === 'X') return false;
-    return !blocked[y * W + x];
-  };
-
-  // One drift's next cell when the drifts move: its own direction
-  // first, then the next directions clockwise (§6 step 10).
-  const dirIndex = (dir) => {
-    const i = CLOCKWISE.indexOf(dir);
-    return i < 0 ? 0 : i;
-  };
-  const driftStep = (d) => {
-    const from = dirIndex(d.dir);
-    for (let i = 0; i < 4; i++) {
-      const dir = CLOCKWISE[(from + i) & 3];
-      const nx = d.x + DIRS[dir][0], ny = d.y + DIRS[dir][1];
-      if (driftPass(nx, ny)) return { x: nx, y: ny, dir };
-    }
-    return { x: d.x, y: d.y, dir: d.dir };
-  };
-
-  // Drifts move this step only when the grown tick says so (§6 step 10).
-  const period = state.level.driftPeriod > 0 ? state.level.driftPeriod : 1;
-  const driftsMove = ((state.tick + 1) % period) === 0;
-  const ahead = new Array(drifts.length);
-  for (let i = 0; i < drifts.length; i++) {
-    ahead[i] = driftsMove ? driftStep(drifts[i]) : { x: drifts[i].x, y: drifts[i].y, dir: drifts[i].dir };
-  }
-
-  // A small penalty map: cells drifts stand on or could walk or turn
-  // into, so a shortest path with a hairpin through the drift traffic
-  // loses to a slightly longer calm one.
-  const danger = new Array(W * H).fill(0);
-  const bump = (x, y, v) => {
-    if (x >= 0 && x < W && y >= 0 && y < H) danger[y * W + x] += v;
-  };
-  for (const d of ahead) {
-    bump(d.x, d.y, ON_DRIFT);
-    // Where this drift could be on its next move: the direction it
-    // prefers first, and every turn it could still fall back to.
-    const from = dirIndex(d.dir);
-    for (let i = 0; i < 4; i++) {
-      const dir = CLOCKWISE[(from + i) & 3];
-      const tx = d.x + DIRS[dir][0], ty = d.y + DIRS[dir][1];
-      if (driftPass(tx, ty)) bump(tx, ty, i === 0 ? COULD_MOVE_TO : COULD_TURN_TO);
+  // Nav grids over the player-passable cells. The planning grid also drops
+  // every live conflict and drift, so planned routes never cross them; the
+  // raw grid is the fallback for goals a patrol is squatting.
+  const navDriftSafe = new Uint8Array(width * height);
+  const navRaw = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const t = tileAt(level, x, y);
+      if (playerPassable(t, open) && !conflicts.has(i)) navRaw[i] = 1;
+      if (navRaw[i] && !driftCells.has(i)) navDriftSafe[i] = 1;
     }
   }
 
-  // BFS over cells passable to the player, telling every cell how far
-  // it is from `(sx, sy)` (used from the player to rank goals and from
-  // the goal to score candidate moves; edges run both ways).
-  const flood = (sx, sy) => {
-    const dist = new Array(W * H).fill(Infinity);
-    if (sx < 0 || sx >= W || sy < 0 || sy >= H) return dist;
-    const queue = [sy * W + sx];
-    dist[queue[0]] = 0;
-    for (let head = 0; head < queue.length; head++) {
-      const here = queue[head];
-      const hx = here % W, hy = (here - hx) / W;
-      const next = dist[here] + 1;
-      for (let k = 0; k < 4; k++) {
-        const nx = hx + DIRS[CLOCKWISE[k]][0], ny = hy + DIRS[CLOCKWISE[k]][1];
-        const there = ny * W + nx;
-        if (playerPass(nx, ny) && dist[there] === Infinity) {
-          dist[there] = next;
-          queue.push(there);
-        }
-      }
+  // Fields for goal picking. Prefer routes that dodge the drifts; falling
+  // back to the raw grid still crosses only where nothing blocks this tick.
+  let nav = navDriftSafe;
+  let dist = fieldFrom(nav, width, height, player.x, player.y);
+  let rawUsed = false;
+
+  // Cell lists for the goal priority.
+  const pads = cellsOf(level, 'M');
+  const exit = cellsOf(level, 'X')[0] ?? -1;
+  const patchCells = state.patches.map((p) => p.y * width + p.x);
+  const patchOn = new Set(patchCells);
+  const freeSpawns = level.spawns
+    .map((s) => s.y * width + s.x)
+    .filter((c) => !patchOn.has(c) && c !== playerCell);
+  const holding = state.carried.length;
+
+  // Pick the goal on the current field; null when nothing is reachable.
+  const pick = () => {
+    if (open && dist[exit] >= 0) return exit;
+    if (holding >= CARRY_MAX) {
+      const pad = nearestReachable(dist, pads);
+      if (pad >= 0) return pad;
     }
-    return dist;
+    const patch = nearestReachable(dist, patchCells);
+    if (patch >= 0) return patch;
+    if (holding > 0) {
+      const pad = nearestReachable(dist, pads);
+      if (pad >= 0) return pad;
+    }
+    return nearestReachable(dist, freeSpawns);
   };
 
-  // Where everything interesting is, in reading order.
-  const idxOf = (c) => c.y * W + c.x;
-  const mergeIdx = [];
-  const exitIdx = [];
-  for (let y = 0; y < H; y++) {
-    const row = tiles[y];
-    for (let x = 0; x < row.length; x++) {
-      const t = row[x];
-      if (t === 'M') mergeIdx.push(y * W + x);
-      else if (t === 'X') exitIdx.push(y * W + x);
+  let goal = pick();
+  if (goal < 0 && !rawUsed) {
+    // Every goal is unreachable on the drift-safe grid: re-plan ignoring
+    // drifts (conflicts still block) and take whatever this reaches.
+    nav = navRaw;
+    dist = fieldFrom(nav, width, height, player.x, player.y);
+    rawUsed = true;
+    goal = pick();
+  }
+  if (goal < 0) return { move: null, pause: false };
+
+  // An incoming drift on this cell right now needs a dodge more than a plan.
+  if (willMove && nextCells.has(playerCell)) {
+    for (const dir of CLOCKWISE) {
+      const nx = player.x + DIRS[dir][0];
+      const ny = player.y + DIRS[dir][1];
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const ni = ny * width + nx;
+      if (!nav[ni]) continue;
+      if (driftCells.has(ni) || nextCells.has(ni) || conflicts.has(ni)) continue;
+      return { move: dir, pause: false };
+    }
+    return { move: null, pause: false };
+  }
+
+  // The descent field from the goal over the nav it was reached through.
+  const goalNav = rawUsed ? navRaw : navDriftSafe;
+  const toGoal = fieldFrom(goalNav, width, height, goal % width, (goal - (goal % width)) / width);
+  const from = toGoal[playerCell];
+  if (from <= 0) return { move: null, pause: false };
+
+  // Descent candidates: neighbours closer to the goal, ordered by their
+  // field value, then in clockwise order. The closest safe one moves.
+  const candidates = [];
+  for (let closer = from - 1; closer >= 0; closer--) {
+    for (const dir of CLOCKWISE) {
+      const nx = player.x + DIRS[dir][0];
+      const ny = player.y + DIRS[dir][1];
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const ni = ny * width + nx;
+      if (goalNav[ni] && toGoal[ni] === closer) candidates.push({ dir, i: ni });
+    }
+    if (candidates.length) break;
+  }
+  for (const { dir, i } of candidates) {
+    if (!driftCells.has(i) && !nextCells.has(i) && !swaps.has(i) && !conflicts.has(i)) {
+      return { move: dir, pause: false };
     }
   }
-  const patchIdx = patches.map(idxOf);
-
-  const nearPlayer = flood(px, py);
-  // The first of `cells` at the least distance in `dist`; ties keep
-  // reading order because `cells` arrive in it.
-  const nearest = (cells, dist) => {
-    let best = -1, bestDist = Infinity;
-    for (let i = 0; i < cells.length; i++) {
-      if (dist[cells[i]] < bestDist) { bestDist = dist[cells[i]]; best = cells[i]; }
-    }
-    return best;
-  };
-
-  // Goal by priority; `-1` when none of that rank is reachable.
-  let goal = -1;
-  if (open && carried.length > 0) goal = nearest(mergeIdx, nearPlayer);
-  if (goal < 0 && open) goal = nearest(exitIdx, nearPlayer);
-  if (goal < 0 && carried.length >= CARRY_MAX) goal = nearest(mergeIdx, nearPlayer);
-  if (goal < 0) goal = nearest(patchIdx, nearPlayer);
-  if (goal < 0 && carried.length > 0) goal = nearest(mergeIdx, nearPlayer);
-  if (goal < 0) {
-    // Nothing to fetch: wait by a spawn point for the next patch, but
-    // not on one (a patch never spawns on the player's cell) and not
-    // under a drift (a patch never spawns under one either).
-    const busy = [];
-    for (const d of drifts) if (d && d.y >= 0 && d.y < H && d.x >= 0 && d.x < W) busy.push(d.y * W + d.x);
-    const spawnIdx = [];
-    const spawns = state.level.spawns || [];
-    for (const s of spawns) {
-      const i = s.y * W + s.x;
-      if (i === py * W + px || busy.indexOf(i) >= 0) continue;
-      spawnIdx.push(i);
-    }
-    goal = nearest(spawnIdx, nearPlayer);
-  }
-  if (goal < 0) goal = nearest(mergeIdx, nearPlayer);
-
-  // Distance to the goal from every cell, or none when the level
-  // happens to offer no reachable goal at all this tick.
-  const goalDist = goal >= 0
-    ? flood(goal % W, (goal - (goal % W)) / W)
-    : null;
-
-  // How each input would rank on safety, exactly as §6 step 12 hits:
-  // with invulnerability nothing hits; otherwise a drift that ends this
-  // step on the player's cell — or that swaps cells with it, standing
-  // now where the player began the move and coming from where the
-  // player now is — hits, a drop when carrying, a lost life when not.
-  const forMove = (mv) => {
-    let tx = px, ty = py;
-    if (mv) {
-      const nx = px + DIRS[mv][0], ny = py + DIRS[mv][1];
-      if (playerPass(nx, ny)) { tx = nx; ty = ny; }
-    }
-    if (state.invuln > 0) return { x: tx, y: ty, bad: 0 };
-    let bad = 0;
-    for (let i = 0; i < drifts.length; i++) {
-      const pre = drifts[i], post = ahead[i];
-      let hit = post.x === tx && post.y === ty;
-      if (!hit && (pre.x !== post.x || pre.y !== post.y)) {
-        hit = post.x === px && post.y === py && pre.x === tx && pre.y === ty;
-      }
-      if (hit) {
-        const cost = carried.length > 0 ? DROP : state.lives > 1 ? HIT : LOST;
-        if (cost > bad) bad = cost;
-      }
-    }
-    return { x: tx, y: ty, bad };
-  };
-
-  // The safest input, then the shortest, with the danger map as a tie
-  // lighter between routes that measure the same.
-  let bestMove = null, bestBad = Infinity, bestCost = Infinity;
-  for (let i = 0; i < CANDIDATES.length; i++) {
-    const mv = CANDIDATES[i];
-    const plan = forMove(mv);
-    const toIdx = plan.y * W + plan.x;
-    const base = goalDist && isFinite(goalDist[toIdx]) ? goalDist[toIdx] : OFF_GRID;
-    const cost = base + danger[toIdx];
-    if (plan.bad < bestBad || (plan.bad === bestBad && cost < bestCost)) {
-      bestBad = plan.bad;
-      bestCost = cost;
-      bestMove = mv;
-    }
-  }
-  return { move: bestMove, pause: false };
+  // Every descent step is under a drift or a conflict: hold still rather
+  // than trade a hit for nothing (waiting also lets patrols move on).
+  return { move: null, pause: false };
 }
