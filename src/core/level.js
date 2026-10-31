@@ -1,40 +1,24 @@
-// Quorum Run — level loading and validation (DESIGN.md §4).
-//
-// A level definition is a plain object:
-//   { name, quorum, par, driftPeriod, spawnEvery, map }
-// `validateLevel(def)` returns { ok, errors }: the error codes of §4, in the
-// spec's order, each at most once. `parseLevel(def)` turns a valid
-// definition into the parsed level the game state holds, and throws an
-// Error whose message starts with 'invalid level' for an invalid one.
-//
-// This module is pure core: no DOM, no clock, no randomness.
+// Level loading and validation (DESIGN.md §4): what a level definition is,
+// how it is checked, and how it becomes a level the rules can use.
+// Pure: no DOM, no clock, no randomness; nothing here changes its argument.
 
+// The drift characters and the direction each names.
 const DRIFT_DIRS = { '^': 'up', '>': 'right', 'v': 'down', '<': 'left' };
 
-const MAX_WIDTH = 32;
-const MAX_HEIGHT = 24;
+// Every map character of §4's table.
+const CHARS = new Set(['#', '.', '@', 'P', 'M', 'X', 'H', '^', '>', 'v', '<']);
 
-// Every cell character a map may hold.
-const ALLOWED = new Set(['#', '.', '@', 'P', 'M', 'X', 'H', '^', '>', 'v', '<']);
+const isPositiveInteger = (v) => Number.isInteger(v) && v > 0;
 
-// The order the error codes must come in.
-const ERROR_ORDER = [
-  'bad_fields', 'ragged', 'too_big', 'bad_char', 'no_border',
-  'player_count', 'exit_count', 'no_merge', 'no_spawn', 'unreachable',
-];
-
-function isPositiveInteger(v) {
-  return typeof v === 'number' && Number.isInteger(v) && v > 0;
-}
-
-// Check 1: bad_fields. Any field of §4 missing, of the wrong type, or out
-// of range. A non-object, a map that is not a non-empty array of strings,
-// or a non-string row counts too.
+// The fields §4 names, checked first: when any is missing, of the wrong
+// type, or out of range, no other check runs.
 function badFields(def) {
-  if (typeof def !== 'object' || def === null) return true;
+  if (def === null || typeof def !== 'object' || Array.isArray(def)) return true;
   if (typeof def.name !== 'string' || def.name.length === 0) return true;
-  if (!isPositiveInteger(def.quorum) || !isPositiveInteger(def.par)) return true;
-  if (!isPositiveInteger(def.driftPeriod) || !isPositiveInteger(def.spawnEvery)) return true;
+  if (!isPositiveInteger(def.quorum)) return true;
+  if (!isPositiveInteger(def.par)) return true;
+  if (!isPositiveInteger(def.driftPeriod)) return true;
+  if (!isPositiveInteger(def.spawnEvery)) return true;
   if (!Array.isArray(def.map) || def.map.length === 0) return true;
   for (const row of def.map) {
     if (typeof row !== 'string') return true;
@@ -42,121 +26,122 @@ function badFields(def) {
   return false;
 }
 
-// One pass over the map collecting everything validation and parsing need.
-// `width` is the widest row; the rest are per-cell scans.
-function scanMap(map) {
-  const scan = {
-    width: 0,
-    players: [],
-    exits: [],
-    merges: [],
-    spawns: [],
-    drifts: [],
-    badChar: false,
-    noBorder: false,
-  };
-  const height = map.length;
-  for (let y = 0; y < height; y++) {
-    const row = map[y];
-    if (row.length > scan.width) scan.width = row.length;
-    const rightEdge = row.length - 1;
-    for (let x = 0; x < row.length; x++) {
-      const ch = row[x];
-      if (!ALLOWED.has(ch)) scan.badChar = true;
-      if (ch === '#') continue;
-      if (ch === '@') scan.players.push({ x, y });
-      else if (ch === 'X') scan.exits.push({ x, y });
-      else if (ch === 'M') scan.merges.push({ x, y });
-      else if (ch === 'P') scan.spawns.push({ x, y });
-      else if (DRIFT_DIRS[ch]) scan.drifts.push({ x, y, dir: DRIFT_DIRS[ch] });
-      if (y === 0 || y === height - 1 || x === 0 || x === rightEdge) scan.noBorder = true;
-    }
-  }
-  return scan;
+// The map's own width: the longest row.
+function mapWidth(map) {
+  let w = 0;
+  for (const row of map) w = Math.max(w, row.length);
+  return w;
 }
 
-// Flood fill from a cell through up, down, left, and right steps over
-// every cell that is not '#' (holds and the exit are passable). Returns a
-// Set of 'x,y' keys.
-function reachable(map, start) {
-  const seen = new Set([start.x + ',' + start.y]);
-  const frontier = [{ x: start.x, y: start.y }];
-  const height = map.length;
-  while (frontier.length > 0) {
-    const cell = frontier.pop();
-    const steps = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-    for (const [dx, dy] of steps) {
-      const x = cell.x + dx;
-      const y = cell.y + dy;
-      if (y < 0 || y >= height || x < 0 || x >= map[y].length) continue;
-      if (map[y][x] === '#') continue;
-      const key = x + ',' + y;
-      if (!seen.has(key)) {
-        seen.add(key);
-        frontier.push({ x, y });
-      }
+// How many of a character the map holds.
+function countChar(map, ch) {
+  let n = 0;
+  for (const row of map) {
+    for (const c of row) {
+      if (c === ch) n++;
     }
   }
-  return seen;
+  return n;
 }
 
 export function validateLevel(def) {
+  const errors = [];
   if (badFields(def)) return { ok: false, errors: ['bad_fields'] };
   const map = def.map;
-  const scan = scanMap(map);
-  const codes = new Set();
-
-  // 2. ragged: rows of different lengths.
-  const lengths = new Set(map.map((row) => row.length));
-  if (lengths.size > 1) codes.add('ragged');
-
-  // 3. too_big: wider than 32 or taller than 24.
-  if (scan.width > MAX_WIDTH || map.length > MAX_HEIGHT) codes.add('too_big');
-
-  // 4. bad_char; 5. no_border.
-  if (scan.badChar) codes.add('bad_char');
-  if (scan.noBorder) codes.add('no_border');
-
-  // 6-9. counts.
-  if (scan.players.length !== 1) codes.add('player_count');
-  if (scan.exits.length !== 1) codes.add('exit_count');
-  if (scan.merges.length === 0) codes.add('no_merge');
-  if (scan.spawns.length === 0) codes.add('no_spawn');
-
-  // 10. unreachable, only when there is exactly one player start.
-  if (scan.players.length === 1) {
-    const seen = reachable(map, scan.players[0]);
-    const targets = scan.spawns.concat(scan.merges, scan.exits);
-    for (const cell of targets) {
-      if (!seen.has(cell.x + ',' + cell.y)) {
-        codes.add('unreachable');
+  const height = map.length;
+  const width = mapWidth(map);
+  if (map.some((row) => row.length !== width)) errors.push('ragged');
+  if (width > 32 || height > 24) errors.push('too_big');
+  for (const row of map) {
+    for (const c of row) {
+      if (!CHARS.has(c)) {
+        errors.push('bad_char');
         break;
       }
     }
+    if (errors.includes('bad_char')) break;
   }
-
-  const errors = ERROR_ORDER.filter((code) => codes.has(code));
+  let border = true;
+  for (let y = 0; y < height; y++) {
+    const row = map[y];
+    if (y === 0 || y === height - 1) {
+      for (const c of row) {
+        if (c !== '#') border = false;
+      }
+    } else {
+      if (row[0] !== '#' || row[row.length - 1] !== '#') border = false;
+    }
+  }
+  if (!border) errors.push('no_border');
+  const players = countChar(map, '@');
+  const exits = countChar(map, 'X');
+  const merges = countChar(map, 'M');
+  const spawns = countChar(map, 'P');
+  if (players !== 1) errors.push('player_count');
+  if (exits !== 1) errors.push('exit_count');
+  if (merges === 0) errors.push('no_merge');
+  if (spawns === 0) errors.push('no_spawn');
+  if (players === 1) {
+    let sx = -1;
+    let sy = -1;
+    for (let y = 0; y < height; y++) {
+      const x = map[y].indexOf('@');
+      if (x >= 0) {
+        sx = x;
+        sy = y;
+      }
+    }
+    const seen = new Set();
+    const stack = [[sx, sy]];
+    seen.add(sy + ':' + sx);
+    while (stack.length) {
+      const [cx, cy] = stack.pop();
+      for (const [nx, ny] of [[cx, cy - 1], [cx + 1, cy], [cx, cy + 1], [cx - 1, cy]]) {
+        if (ny < 0 || ny >= height) continue;
+        if (nx < 0 || nx >= map[ny].length) continue;
+        if (map[ny][nx] === '#') continue;
+        const key = ny + ':' + nx;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        stack.push([nx, ny]);
+      }
+    }
+    let reachable = true;
+    for (let y = 0; y < height && reachable; y++) {
+      for (let x = 0; x < map[y].length && reachable; x++) {
+        const c = map[y][x];
+        if ((c === 'P' || c === 'M' || c === 'X') && !seen.has(y + ':' + x)) reachable = false;
+      }
+    }
+    if (!reachable) errors.push('unreachable');
+  }
   return { ok: errors.length === 0, errors };
 }
 
 export function parseLevel(def) {
-  const { ok, errors } = validateLevel(def);
-  if (!ok) {
-    throw new Error('invalid level: ' + errors.join(', '));
+  const validation = validateLevel(def);
+  if (!validation.ok) {
+    throw new Error('invalid level: ' + validation.errors.join(', '));
   }
   const map = def.map;
-  const height = map.length;
-  const scan = scanMap(map);
-  const tiles = [];
-  for (let y = 0; y < height; y++) {
-    const row = map[y];
-    let line = '';
-    for (let x = 0; x < row.length; x++) {
-      const ch = row[x];
-      // '@', 'P', and the drift chars are actors, not terrain.
-      line += (ch === '@' || ch === 'P' || DRIFT_DIRS[ch]) ? '.' : ch;
+  const tiles = map.map((row) => [...row].map((c) => (c === '@' || c === 'P' || DRIFT_DIRS[c] ? '.' : c)).join(''));
+  const start = { x: 0, y: 0 };
+  const spawns = [];
+  const drifts = [];
+  let startSet = false;
+  for (let y = 0; y < map.length; y++) {
+    for (let x = 0; x < map[y].length; x++) {
+      const c = map[y][x];
+      if (c === '@') {
+        start.x = x;
+        start.y = y;
+        startSet = true;
+      } else if (c === 'P') {
+        spawns.push({ x, y });
+      } else if (DRIFT_DIRS[c]) {
+        drifts.push({ x, y, dir: DRIFT_DIRS[c] });
+      }
     }
-    tiles.push(line);
   }
   return {
     name: def.name,
@@ -164,11 +149,11 @@ export function parseLevel(def) {
     par: def.par,
     driftPeriod: def.driftPeriod,
     spawnEvery: def.spawnEvery,
-    width: scan.width,
-    height,
+    width: map[0].length,
+    height: map.length,
     tiles,
-    start: { x: scan.players[0].x, y: scan.players[0].y },
-    spawns: scan.spawns.map((spawn) => ({ x: spawn.x, y: spawn.y })),
-    drifts: scan.drifts.map((drift) => ({ x: drift.x, y: drift.y, dir: drift.dir })),
+    start: startSet ? start : { x: -1, y: -1 },
+    spawns,
+    drifts,
   };
 }
