@@ -29,7 +29,8 @@ import { loadSettings, saveSettings, tickMs } from './ui/settings.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const FONT = 'ui-monospace, Menlo, Consolas, monospace';
+// Match the font `paint` uses, so measuring for centering is exact.
+const FONT = 'monospace';
 const DIM = 0.62;
 
 const store = {
