@@ -3,19 +3,21 @@
 // Math.random -- randomness comes only from the state's seed through the
 // PRNG of src/core/rng.js.
 //
-// Ownership note: this module is shared. Steps 1 to 9 of §6 (this file's
-// flow up to and including loading the next level or winning) are one
-// owner's half; §6 steps 10 to 13 (drift movement, drift collisions,
-// hits, spawns) slot into the clearly marked place inside `step`.
+// Ownership note: this module is shared. Steps 1 to 9 of §6 sit in
+// `step`'s first half; §6 steps 10 to 13 (drift movement, drift
+// collisions, hits, spawns) sit in its clearly marked second half.
 
 import {
   CARRY_MAX,
   START_LIVES,
+  INVULN_TICKS,
+  CONFLICT_TICKS,
   PATCH_BASE,
   SAME_COLOR_BONUS,
   TIME_BONUS_PER_TICK,
   COLORS,
   DIRS,
+  CLOCKWISE,
 } from './constants.js';
 import { rngInt } from './rng.js';
 import { parseLevel } from './level.js';
@@ -113,6 +115,51 @@ export function playerCanEnter(state, conflicts, x, y, open) {
   return !blocksPlayer(tileAt(state, x, y), open) && !conflictAt(conflicts, x, y);
 }
 
+// A cell blocks a drift when it is a wall, a hold, or the exit -- open or
+// not -- or holds a conflict, per §6 step 10.
+export function driftCanEnter(state, conflicts, x, y) {
+  const tile = tileAt(state, x, y);
+  return tile !== '#' && tile !== 'H' && tile !== 'X' && !conflictAt(conflicts, x, y);
+}
+
+// One drift's move: its own direction, then the next ones clockwise, up
+// to four. Returns the drift's next `{ x, y, dir }` and whether it moved.
+function moveDrift(state, conflicts, drift) {
+  const facing = CLOCKWISE.indexOf(drift.dir);
+  for (let turn = 0; turn < 4; turn++) {
+    const dir = CLOCKWISE[(facing + turn) % 4];
+    const x = drift.x + DIRS[dir][0];
+    const y = drift.y + DIRS[dir][1];
+    if (driftCanEnter(state, conflicts, x, y)) {
+      return { x, y, dir, moved: true };
+    }
+  }
+  return { x: drift.x, y: drift.y, dir: drift.dir, moved: false };
+}
+
+// Every drift standing on a cell with two or more drifts reverses its
+// direction; the cell gains a conflict unless it holds one already, and
+// one `conflict` event fires for the cell (§6 step 11). Cells are
+// scanned in reading order.
+function collideDrifts(state, conflicts, drifts, events) {
+  const touched = new Set();
+  for (let y = 0; y < state.level.height; y++) {
+    for (let x = 0; x < state.level.width; x++) {
+      const here = [];
+      for (const d of drifts) {
+        if (d.x === x && d.y === y) here.push(d);
+      }
+      if (here.length < 2) continue;
+      for (const d of here) touched.add(d);
+      if (!conflictAt(conflicts, x, y)) conflicts.push({ x, y, ttl: CONFLICT_TICKS });
+      events.push('conflict');
+    }
+  }
+  for (const d of touched) {
+    d.dir = CLOCKWISE[(CLOCKWISE.indexOf(d.dir) + 2) % 4];
+  }
+}
+
 // ---- one step (§6) ------------------------------------------------------
 
 function readInput(input) {
@@ -157,6 +204,7 @@ export function step(state, input) {
   let drifts = state.drifts;
   let conflicts = ageConflicts(state.conflicts);
   let score = state.score;
+  let lives = state.lives;
   let merges = state.merges;
   let open = state.open;
   let invuln = state.invuln;
@@ -245,11 +293,93 @@ export function step(state, input) {
     };
   }
 
-  // ---- §6 steps 10 to 13 (drift movement, drift collisions, hits,
-  // spawns) belong here: insert them between this line and the assembly
-  // below, reassigning the working values above (drifts, conflicts,
-  // carried, patches, score, lives, invuln, status, seed, events, ...).
-  // Reaching this point means the level did not end this step.
+  // 10. Drifts move on their beat: each drift tries its own direction,
+  // then clockwise up to four, ignoring the player and other drifts.
+  const driftsMoved = tick % state.level.driftPeriod === 0;
+  const driftsMovedFlags = [];
+  if (driftsMoved) {
+    const nextDrifts = [];
+    for (const d of state.drifts) {
+      const moved = moveDrift(state, conflicts, d);
+      nextDrifts.push({ x: moved.x, y: moved.y, dir: moved.dir });
+      driftsMovedFlags.push(moved.moved);
+    }
+    drifts = nextDrifts;
+  }
+
+  // 11. Drift collisions, only on a tick when the drifts moved.
+  if (driftsMoved) {
+    collideDrifts(state, conflicts, drifts, events);
+  }
+
+  // 12. Hits, unless invulnerability shields the player this step.
+  if (invuln > 0) {
+    invuln -= 1;
+  } else {
+    let hit = false;
+    for (const d of drifts) {
+      if (!hit && d.x === player.x && d.y === player.y) hit = true;
+    }
+    if (!hit && driftsMoved) {
+      // A drift that moved this step swapped cells with the player: it is
+      // now where the player was before step 6, and was where the player
+      // is now.
+      for (let i = 0; i < drifts.length; i++) {
+        const before = state.drifts[i];
+        const after = drifts[i];
+        if (!driftsMovedFlags[i]) continue;
+        if (after.x === state.player.x && after.y === state.player.y &&
+            before.x === player.x && before.y === player.y) {
+          hit = true;
+          break;
+        }
+      }
+    }
+    if (hit) {
+      if (carried.length > 0) {
+        // The patches are dropped and lost, not returned to the floor.
+        carried = [];
+        invuln = INVULN_TICKS;
+        events.push('drop');
+      } else {
+        lives -= 1;
+        events.push('hit');
+        if (lives <= 0) {
+          status = 'lost';
+          events.push('lost');
+        } else {
+          player = { x: state.level.start.x, y: state.level.start.y };
+          invuln = INVULN_TICKS;
+        }
+      }
+    }
+  }
+
+  // 13. Spawns: one patch per beat when the level runs short, drawn from
+  // the seed (spot first, then colour), appended to the patches.
+  if (status === 'playing' &&
+      levelTicks % state.level.spawnEvery === 0 &&
+      patches.length + carried.length < state.level.spawns.length) {
+    const free = [];
+    for (const spawn of state.level.spawns) {
+      if (patches.some((p) => p.x === spawn.x && p.y === spawn.y)) continue;
+      if (spawn.x === player.x && spawn.y === player.y) continue;
+      if (drifts.some((d) => d.x === spawn.x && d.y === spawn.y)) continue;
+      free.push(spawn);
+    }
+    if (free.length > 0) {
+      const spot = rngInt(seed, free.length);
+      seed = spot.seed;
+      const color = rngInt(seed, COLORS);
+      seed = color.seed;
+      patches = patches.concat([{
+        x: free[spot.value].x,
+        y: free[spot.value].y,
+        color: color.value,
+      }]);
+      events.push('spawn');
+    }
+  }
 
   return {
     ...state,
@@ -262,6 +392,7 @@ export function step(state, input) {
     drifts,
     conflicts,
     score,
+    lives,
     merges,
     open,
     invuln,
