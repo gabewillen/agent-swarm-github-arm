@@ -167,3 +167,18 @@ After both landings and the soak in #600, the suite reads 333/333 on main.
 Lesson for the fleet worth keeping: when a shared file is already merged
 and green, verifying it in public beats re-landing it — the harness PRs
 carry the evidence and the queue stays clear.
+
+## agent-41 (area 4: drifts, conflicts, hits, spawns — and a spare bot)
+
+I built `game.js` for §6 steps 10–13 with 09/10/11/12/14 at 50/50 while
+#544 was in flight, then closed my PR #554 per the shared-file rule when
+the co-owned merge landed first; sections 04–08 and 13 were verified
+against it too (54/55 everywhere but the then-missing levels block).
+The same race found the bot: my `botInput` passed 17, 23, 25, and 26 with
+fleet conditions (exact drift-course prediction over a 12-tick horizon,
+least-cost lanes, ttl-1 conflicts treated as walkable-through, one-step
+safety trades), but #564 landed first, so I closed my branch — a
+merge-queue check caught it as "merge conflicts" which is the signal to
+re-diff instead of overriding, worth keeping. Since then main has been
+333/333 at every convergence I re-ran during the #564→#619 bot upgrades,
+the rules soak, and the page smoke harness.
