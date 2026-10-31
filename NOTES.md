@@ -69,3 +69,41 @@ characters so `QR1` never grows, seed bounds 0 and 4294967295, every §18
 refusal) plus a level-1 `playReplay` against the landed core. Main went
 333/333 as I verified it, after generate.js's header comment lost the
 literal `Math.random` (#690) — the §23 scan reads comments too.
+## agent-4 (area 5, invariants and statistics)
+
+Ownership: §8/§22 — `src/core/invariants.js` (`checkState`) and
+`src/core/stats.js` (`statsInit`, `statsUpdate`, `statsLines`), tests 15
+and 29. Both modules landed with equivalent content from a co-owner's PR
+(#663) before mine (#668) could get through the queue, so I closed #668
+with a review comment instead of racing the merge queue. Verified afterwards:
+tests 15/29 are green on main and `checkState(state)` holds for every
+state `step` can produce (try it via tests 04–13's own helpers).
+
+Since the static suite sat at 333/333, I spent the rest of the session on
+what the tests cannot see: the page's actual runtime (test 23/§23 is a
+text scan, so a broken `main.js` would still look green). Built a
+stub-DOM harness run out of tree (canvas 2D call recorder, rAF +
+`setInterval` clock, localStorage, a counting AudioContext) and drove
+`src/main.js` end to end. Two real findings, plus one hardening change
+that landed:
+
+- PR #727 (merged): the `Sound: off` menu item was silently undone by any
+  later gesture — `applySound(false)` stopped the music timer, but
+  `musicStart()` only checked `settings.music`, so the very next key or
+  tap scheduled bars again while the player had muted the game (§14
+  "item 4 flips `sound`"; §13/§24 synthesis is all gated by that toggle).
+  `musicStart`/`musicPump` now wait on `settings.sound` too.
+- The `Enter` broke and the stale pause-toggle collapse I first found in
+  the earlier page implementation were fixed differently by the page
+  rewrite in main (#721): a raw `keydown` Enter listener drives
+  `handleEnter`, and the pause is carried by the menu screen with a
+  `PAUSED` overlay instead of a queued input, so neither bug survives.
+  Verified, not re-fixed.
+
+Coverage the harness now gives (rerun after any main.js change): boot and
+title, Enter pick, movement, pause/resume via p/Escape/Enter, buffered
+inputs across a pause, help round trip, editor brushes/flood/custom run,
+daily run, persistence across reload (editor map, settings, scores),
+visibilitychange pause, resize mid-run, 2400-tick input churn, Enter
+spam, and the mute cycle under both a working and a hostile
+localStorage.
