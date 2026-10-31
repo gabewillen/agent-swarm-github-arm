@@ -644,7 +644,7 @@ canvas.addEventListener('touchend', (e) => {
   if (input) {
     if (menu.screen === 'playing') queue = queuePush(queue, input);
   } else {
-    tapAction(canvasPos(e));
+    tapAction(canvasPos(t));
   }
 }, { passive: false });
 
@@ -701,7 +701,7 @@ function editorClick(p, button) {
   const lay = layout({ width: w, height: h }, viewNow());
   const gx = Math.floor((p.x - lay.ox) / lay.cell);
   const gy = Math.floor((p.y - lay.oy) / lay.cell);
-  if (gx < 0 || gy < 0 || gx >= w || gy >= h) return;
+  if (!(gx >= 0 && gy >= 0 && gx < w && gy < h)) return;
   if (button === 2) customDef = editorPaint(customDef, gx, gy, '.');
   else if (armFill) customDef = editorFill(customDef, gx, gy, armCh);
   else customDef = editorPaint(customDef, gx, gy, armCh);
