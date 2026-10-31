@@ -51,7 +51,7 @@ const ACH_KEY = 'quorum-run-achievements';
 
 function storedText(key, fallback) {
   try {
-    return window.localStorage.getItem(key) ?? fallback;
+    return localStorage.getItem(key) ?? fallback;
   } catch {
     return fallback;
   }
@@ -59,7 +59,7 @@ function storedText(key, fallback) {
 
 function storeText(key, text) {
   try {
-    window.localStorage.setItem(key, text);
+    localStorage.setItem(key, text);
   } catch {
     /* private mode or full quota: play without it */
   }
