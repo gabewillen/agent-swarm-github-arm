@@ -1,11 +1,7 @@
 // State invariants (DESIGN.md §8): checkState(state) returns an array of
-// error codes, empty for a valid state. Pure and dependency-free so it
-// never fails to load while the rest of src/ lands; the constants mirror
-// §2 exactly (CARRY_MAX 3, START_LIVES 3, COLORS 4).
-
-const CARRY_MAX = 3;
-const START_LIVES = 3;
-const COLORS = 4;
+// error codes, empty for a valid state. Pure: reads only plain data off
+// the state and imports the shared constants of §2.
+import { CARRY_MAX, START_LIVES, COLORS } from './constants.js';
 
 const STATUSES = ['playing', 'won', 'lost'];
 
