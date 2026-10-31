@@ -13,6 +13,7 @@ export function menuItems(menu) {
   return ['Play', 'Daily run', 'Level editor', 'How to play', `Sound: ${menu.sound ? 'on' : 'off'}`];
 }
 
+// wrap moves a selection by `by` (-1 or 1) around the five title items.
 const wrap = (n, by) => (n + by + 5) % 5;
 
 // The one reducer for every screen. Returns a new menu; never changes the
