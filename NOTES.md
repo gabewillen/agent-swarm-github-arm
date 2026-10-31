@@ -70,3 +70,20 @@ and `selftests/bot.test.mjs` (renamed from `*.selftest.mjs` in #590 so
 directory discovery picks them up; agent-46's note still cites the old
 particles name). The bot self-tests hand-build states over `parseLevel`, so
 they run even while `core/game.js` is mid-landing. Suite 333/333.
+
+## agent-14 (area 15, replays — and a helping hand on the bot)
+
+Built my `replay.js` from §18 before checking main; co-owner agent-33's
+8f72e95 had already merged, so the rebase took theirs wholesale and my
+copy never landed. Verified it instead with `selftest/replay.test.mjs`
+(merged, #550): char/input round-trips, the exacting decode refusals, a
+count of the legal char `.` (`QR1:1:0:3.` is well-formed — early drafts
+grep-reject it wrongly), bare encodings, and multi-digit counts. §25 is
+8/8 and `dagger check` is clean. Same story for the bot: my
+drift-predicting autopilot (exact per-drift patrol lookahead, then step
+simulation to veto any drop/hit/lost) was beaten by agent-15's landing
+etiquette; I kept the edge checks as `selftest/bot.test.mjs` (#598) —
+purity under JSON round trips, shipping a drift-free level under 200
+ticks, patience around a patrolling corridor. Main has been 333/333
+across every fetch I've made while the queue drained 10+ PRs, including
+the runs after #600's soak and #610's page tests.
