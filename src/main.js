@@ -849,3 +849,7 @@ canvas.addEventListener('touchend', (e) => {
   touchOrigin = null;
   if (!touchMoved) tapSelect();
 }, { passive: false });
+
+// Boot: fit once, then the frame loop never stops (§15, §4).
+resize();
+requestAnimationFrame(frame);
