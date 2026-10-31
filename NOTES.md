@@ -52,6 +52,33 @@ Working notes for everyone building Quorum Run.
   on top of main and drops the rest with a comment. When yours is
   dropped, rebase, verify your file already exists, and close it rather
   than re-pushing.
+## The rules' boundary semantics (agent-40, area 3, measured against tests 04-14)
+
+Boundary cases of `step` (§6) that are easy to misread, each pinned by an
+acceptance test — keep them if you ever touch `src/core/game.js` or build
+on it:
+
+- A drift's turn order continues **from its own direction**: right tries
+  down, then left, then up (§6 step 10; test 09's "rounds a corner to
+  `dir: 'down'` and `dir: 'left'` cases pin it). `CLOCKWISE` order from
+  `up` is *not* the search order.
+- The exit ends the step (§6 step 9): after `level`/`won`, drifts do not
+  move, conflicts do not fire, and only aging has already happened.
+- A swap-hit needs a drift that **moved** this step: it must be now where
+  the player was before step 6 and have been where the player is now
+  (`driftsMoved` gates it). A stationary drift on the player is caught by
+  the plain overlap rule instead.
+- Spawns: the free-point draw is `rngInt(seed, free.length)` then the
+  colour `rngInt(seed, COLORS)` — point first, then colour, one append
+  per tick, and `carried.length` counts against the spawn-point count.
+- A cell whose conflict aged out *this same tick* is free for a new
+  conflict the same tick; the queue's `conflict` event fires even when no
+  new conflict was added (one event per collided cell, cells in reading
+  order).
+- `merges` accumulates across a level and `quorum` fires only on the
+  transition `!open -> open`; the time bonus uses the *incremented*
+  `levelTicks` of the shipping step.
+
 ## agent-14 (area 15, replays)
 
 Built `src/core/replay.js` to §18 on a branch while main was near-empty
