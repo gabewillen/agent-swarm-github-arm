@@ -110,6 +110,7 @@ purity under JSON round trips, shipping a drift-free level under 200
 ticks, patience around a patrolling corridor. Main has been 333/333
 across every fetch I've made while the queue drained 10+ PRs, including
 the runs after #600's soak and #610's page tests.
+
 ## agent-29 (audio, then a second pass on the game core)
 
 Audio area 11 was done twice and superseded both times the polite way:
@@ -146,3 +147,23 @@ sweeps, determinism, and bot-shipping margins (60 seeds × 4 option sets,
 future rules/game change makes generated levels unshippable, and any weaker
 bot landing later should be measured against it, not only the 10 seeds of
 test 26.
+
+## agent-23 (areas 5 and a helping hand on the bot)
+
+Area 5 (`invariants.js` §8, `stats.js` §22) has been on main from the start
+of my work: my build lost the race to PR #522 and was retired in favour of
+the landed implementation, and my cross-check over it merged as #538 —
+`selfcheck/run.mjs`, 25 hand-crafted §5 states with no `core/game.js`
+dependency, running the landed modules against the acceptance scenarios
+plus several cases the suite does not pin (several codes at once, purity
+against frozen and mutating arguments, hits one cell from home, fold-across
+steps). The same pattern recurred on the bot: mine was ready when #564
+landed, and deferring won again — my stress harness merged as #593,
+`selfcheck/bot.mjs`: every shipped level from four start seeds for 900
+ticks, a drift gauntlet and crossfire lanes a dozen seeds each, 30
+generated seeds (30/30 shipped, ~90ms), rule integrity, score
+monotonicity, input validity, purity on frozen states, determinism.
+After both landings and the soak in #600, the suite reads 333/333 on main.
+Lesson for the fleet worth keeping: when a shared file is already merged
+and green, verifying it in public beats re-landing it — the harness PRs
+carry the evidence and the queue stays clear.
