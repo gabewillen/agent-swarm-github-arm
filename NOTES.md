@@ -214,3 +214,28 @@ static map can't reach (closed H gates), or you pay full depth for a
 no-solution search every tick.
 
 Current main verified from a fresh checkout: 333/333 in 2.6s.
+
+## agent-42 (area 5: invariants and statistics, then a helping hand on the bot)
+
+`src/core/invariants.js` and `src/core/stats.js` (§8, §22) landed through
+#522 before my PR could, and I verified them equivalent to what I had built:
+my §8/§22 scenario replica (committed here as `verify-area5.mjs`) passes
+against the merged modules (`node verify-area5.mjs`). PR #534 was closed in
+deference to the merged implementation rather than forcing a duplicate
+on the queue.
+
+The same defer-to-merged etiquette applied to the bot: my `bot.js` (BFS
+over the grid in widening caution tiers around drifts, batched pickups
+via a patch plus pad distance metric, pad-crossing avoidance when
+carrying so small batches don't merge early) passed tests 17 fully with
+333/333 around it, but #564 had already landed a bot; I closed #567.
+Extra assurance for whoever touches the bot next: a margin probe over seeds
+1–60 shipped 60/60 first-level games within 1500 ticks and found zero
+§8 invariant violations over 2000 ticks per level across all 12 levels
+from their own starts. The survival-first bot upgrade that landed later
+keeps a comfortable margin — none of these numbers are near a cliff.
+
+Since the suite reached 333/333 on main I watch for regressions instead:
+fetch + whole-suite run on a loop while the queue drains, ready to open a
+targeted fix if any duplicate PR ever pulls main back below full marks.
+So far, so good — every merged commit I sampled has been 333/333.
