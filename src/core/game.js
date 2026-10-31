@@ -1,12 +1,18 @@
+// §6 step 12: the opposite of a direction, for a reversing drift.
+const REVERSE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
 // The rules of Quorum Run (DESIGN.md §5 to §7): the state, the step, and
 // the terrain lookup. Pure: every state in and out is plain JSON data, no
 // DOM, no Math.random — randomness comes only from the state's seed
 // through src/core/rng.js.
 
 import {
+  CLOCKWISE,
   CARRY_MAX,
   COLORS,
+  CONFLICT_TICKS,
   DIRS,
+  INVULN_TICKS,
   PATCH_BASE,
   SAME_COLOR_BONUS,
   START_LIVES,
@@ -64,6 +70,126 @@ function movePlayer(state, cmd, conflicts) {
   if ((t === 'H' || t === 'X') && !state.open) return state.player;
   if (conflictAt(conflicts, x, y)) return state.player;
   return { x, y };
+}
+
+// §6 step 10: whether a drift may enter a cell: not a wall, not a hold,
+// never the exit (open or not), and no conflict on it. A drift ignores the
+// player, patches, merge pads, and other drifts.
+function driftMayEnter(state, conflicts, x, y) {
+  const t = tileAt(state, x, y);
+  if (t === '#' || t === 'H' || t === 'X') return false;
+  return !conflictAt(conflicts, x, y);
+}
+
+// §6 step 10: the drifts move when tick % driftPeriod === 0. Each drift,
+// in array order, tries its own direction, then each next direction
+// clockwise, up to four; it turns to and moves one cell in the first whose
+// target is passable to a drift. With no passable direction it stays and
+// keeps its direction. Returns the new drifts plus, in parallel, each
+// drift's cell before the move (for the swap check in step 12).
+function moveDrifts(state, conflicts) {
+  const drifts = [];
+  const froms = [];
+  for (const d of state.drifts) {
+    const at = CLOCKWISE.indexOf(d.dir);
+    let x = d.x;
+    let y = d.y;
+    let dir = d.dir;
+    for (let i = 0; i < 4; i++) {
+      const want = CLOCKWISE[(at + i) % 4];
+      const [dx, dy] = DIRS[want];
+      if (driftMayEnter(state, conflicts, d.x + dx, d.y + dy)) {
+        x = d.x + dx;
+        y = d.y + dy;
+        dir = want;
+        break;
+      }
+    }
+    drifts.push({ x, y, dir });
+    froms.push({ x: d.x, y: d.y });
+  }
+  return { drifts, froms };
+}
+
+// §6 step 11: only on a tick when drifts moved, cells holding two or more
+// drifts, in reading order, reverse every drift there and add a conflict
+// with ttl CONFLICT_TICKS unless the cell already has one; event conflict
+// once per cell, still.
+function collideDrifts(draft) {
+  const width = draft.level.width;
+  const height = draft.level.height;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const here = draft.drifts.filter((d) => d.x === x && d.y === y);
+      if (here.length < 2) continue;
+      for (const d of here) d.dir = REVERSE[d.dir];
+      if (!conflictAt(draft.conflicts, x, y)) {
+        draft.conflicts.push({ x, y, ttl: CONFLICT_TICKS });
+      }
+      draft.events.push('conflict');
+    }
+  }
+}
+
+// §6 step 12: hits. With any invuln left nothing hits and the shield
+// decays by one. Otherwise the player is hit when a drift is on their
+// cell, or when a drift that moved this step swapped cells with them
+// (its new cell is where the player was and its old cell is where the
+// player now is). Carrying patches, a hit drops them (invuln grows, no
+// life lost); empty-handed it costs a life, and the last one ends the
+// game — otherwise the player returns to the level's start with invuln.
+function resolveHits(draft, prePlayer, froms) {
+  if (draft.invuln > 0) {
+    draft.invuln -= 1;
+    return;
+  }
+  let hit = draft.drifts.some((d) => d.x === draft.player.x && d.y === draft.player.y);
+  for (let i = 0; !hit && i < draft.drifts.length; i++) {
+    const d = draft.drifts[i];
+    const f = froms[i];
+    hit = d.x === prePlayer.x && d.y === prePlayer.y && f.x === draft.player.x && f.y === draft.player.y;
+  }
+  if (!hit) return;
+  if (draft.carried.length > 0) {
+    draft.carried = [];
+    draft.invuln = INVULN_TICKS;
+    draft.events.push('drop');
+    return;
+  }
+  draft.lives -= 1;
+  draft.events.push('hit');
+  if (draft.lives <= 0) {
+    draft.lives = 0;
+    draft.status = 'lost';
+    draft.events.push('lost');
+    return;
+  }
+  draft.player = { x: draft.level.start.x, y: draft.level.start.y };
+  draft.invuln = INVULN_TICKS;
+}
+
+// §6 step 13: a patch spawns when levelTicks % spawnEvery === 0, the game
+// is still being played, and patches lying plus patches carried is below
+// the level's number of spawn points. The spawn point comes from the free
+// ones — in reading order, no patch, not the player's cell, no drift —
+// chosen by the seed first, then the colour, both chained rngInt draws.
+// At most one patch spawns per tick.
+function spawnPatch(draft) {
+  if (draft.status !== 'playing') return;
+  if (draft.levelTicks % draft.level.spawnEvery !== 0) return;
+  if (draft.patches.length + draft.carried.length >= draft.level.spawns.length) return;
+  const patchCells = new Set(draft.patches.map((p) => `${p.x},${p.y}`));
+  const driftCells = new Set(draft.drifts.map((d) => `${d.x},${d.y}`));
+  const free = draft.level.spawns.filter((s) => !patchCells.has(`${s.x},${s.y}`)
+    && !(draft.player.x === s.x && draft.player.y === s.y)
+    && !driftCells.has(`${s.x},${s.y}`));
+  if (free.length === 0) return;
+  const spot = rngInt(draft.seed, free.length);
+  const spawn = free[spot.value];
+  const colour = rngInt(spot.seed, COLORS);
+  draft.seed = colour.seed;
+  draft.patches = draft.patches.concat({ x: spawn.x, y: spawn.y, color: colour.value });
+  draft.events.push('spawn');
 }
 
 // §5: loading a level (at init and on reaching an open exit) sets level,
@@ -214,10 +340,29 @@ export function step(state, input) {
     return draft;
   }
 
-  // 10 to 13 (§6) — drifts move, conflicts form, hits land, and patches
-  // spawn — belong to the drift area of the swarm: they slot in here,
-  // between step 9 above and this return. `draft` is the evolving state
-  // (its tick is this step's tick) and draft.events holds the events so
-  // far. Until those land, the step returns as played out above.
+  // 10 to 13 (§6): drifts move on their phase, conflicts form where they
+  // meet, hits land (or fall on the shield), and patches respawn.
+  // 10. Drifts move only when this step's tick is a multiple of the
+  // level's driftPeriod; the step remembers each drift's old cell.
+  const drifting = draft.tick % state.level.driftPeriod === 0;
+  let drifts = state.drifts.map((d) => ({ x: d.x, y: d.y, dir: d.dir }));
+  let froms = state.drifts.map((d) => ({ x: d.x, y: d.y }));
+  if (drifting) {
+    const run = moveDrifts(state, draft.conflicts);
+    drifts = run.drifts;
+    froms = run.froms;
+  }
+  draft.drifts = drifts;
+
+  // 11. Collisions: only on such a tick, cells in reading order.
+  if (drifting) collideDrifts(draft);
+
+  // 12. Hits: resolution works from the moved board and the player's
+  // cell before step 6, for the swap check.
+  resolveHits(draft, state.player, froms);
+
+  // 13. A patch may still respawn, while the level is being played.
+  spawnPatch(draft);
+
   return draft;
 }
