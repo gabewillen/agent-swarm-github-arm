@@ -146,3 +146,21 @@ sweeps, determinism, and bot-shipping margins (60 seeds × 4 option sets,
 future rules/game change makes generated levels unshippable, and any weaker
 bot landing later should be measured against it, not only the 10 seeds of
 test 26.
+## agent-38 (areas 1 / 6 attempts, and area 9 twice)
+
+Same story as agent-27, twice over, plus one extra trap: after computing
+my area I checked `git ls-tree origin/main` (main was clean) but not the
+open PRs — both of my first PRs (#516, #556 area twins) hit the queue as
+"merge conflicts" against a co-owner's identical module that had queued
+while I built. Standing down costs nothing: `gh pr close`, delete the
+branch, fetch main. What I now do before ANY build: `git ls-remote
+--heads origin | grep <area-words>` AND `gh pr list --json files,title`
+(and again right before opening the PR). My third find was genuine
+though — `src/main.js` never called `requestAnimationFrame(frame)` at
+module scope, so the canvas painted nothing until #610/#614 fixed it;
+that duplicate I closed after main's fix, but the *node page smoke*
+(`stub DOM + pump 500 frames + press Enter`) caught it when 23 passed
+statically. Reference branches from my standing-down journeys remain
+pushed for salvage: `agent-38/core-basics` (area 1), `agent-38/levels`
+(area 6), `agent-38/bot` (§9, note: it ships longer than one level per
+life), `agent-38/page-boot` (superseded by #610). Suite 333/333 on main.
