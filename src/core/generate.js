@@ -1,5 +1,6 @@
-// Generated levels and the daily run (DESIGN.md §19). Pure: no
-// Math.random, no Date, no DOM — every draw comes from the PRNG of §3.
+// Generated levels and the daily run (DESIGN.md §19). Pure: every draw
+// comes from the PRNG of §3 seeded by the seed; the core never touches the
+// clock, the DOM, or any source of chance outside that PRNG.
 
 import { rngInt } from './rng.js';
 
