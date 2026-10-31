@@ -1,0 +1,158 @@
+// Quorum Run: the shipped levels (DESIGN.md §10). First to last rise in
+// difficulty: the first level has no drift, later levels add patrol drifts,
+// hold doors that gate a region away until the quorum lands, longer
+// quorums, and tighter pars.
+
+export const LEVELS = [
+  {
+    name: 'First shift', quorum: 1, par: 60, driftPeriod: 2, spawnEvery: 20,
+    map: [
+      '#######',
+      '#@P.M.#',
+      '#..P.X#',
+      '#.....#',
+      '#######',
+    ],
+  },
+  {
+    name: 'Morning rounds', quorum: 2, par: 90, driftPeriod: 2, spawnEvery: 16,
+    map: [
+      '#########',
+      '#@P..P.M#',
+      '#.#####.#',
+      '#X..>...#',
+      '#########',
+    ],
+  },
+  {
+    name: 'Crossings', quorum: 2, par: 90, driftPeriod: 2, spawnEvery: 16,
+    map: [
+      '#########',
+      '#@..P..>#',
+      '#.###P..#',
+      '#M..#..X#',
+      '#########',
+    ],
+  },
+  {
+    name: 'Hold the line', quorum: 2, par: 100, driftPeriod: 2, spawnEvery: 16,
+    map: [
+      '##########',
+      '#@P.MH.P.#',
+      '#....H..M#',
+      '#..P..HX.#',
+      '##########',
+    ],
+  },
+  {
+    name: 'Detour', quorum: 3, par: 110, driftPeriod: 2, spawnEvery: 14,
+    map: [
+      '###########',
+      '#@P..>...M#',
+      '#.#######.#',
+      '#M.....P..#',
+      '#.#.###.#.#',
+      '#X........#',
+      '###########',
+    ],
+  },
+  {
+    name: 'Interference', quorum: 3, par: 130, driftPeriod: 2, spawnEvery: 12,
+    map: [
+      '###########',
+      '#@P.PP.M..#',
+      '#.#.....#.#',
+      '#..>...<..#',
+      '#.#.....#.#',
+      '#M..P..P.X#',
+      '###########',
+    ],
+  },
+  {
+    name: 'Rush hour', quorum: 3, par: 120, driftPeriod: 1, spawnEvery: 12,
+    map: [
+      '###########',
+      '#@P.M.....#',
+      '#.#########',
+      '#...>.....#',
+      '#.#########',
+      '#....P..M.#',
+      '#.#########',
+      '#..<......#',
+      '#.#########',
+      '#M...P..X.#',
+      '###########',
+    ],
+  },
+  {
+    name: 'Checkpoint', quorum: 4, par: 140, driftPeriod: 2, spawnEvery: 12,
+    map: [
+      '#############',
+      '#@PP.M.H..P.#',
+      '#.....H.....#',
+      '#>...M.H..MX#',
+      '#############',
+    ],
+  },
+  {
+    name: 'Night shift', quorum: 4, par: 170, driftPeriod: 2, spawnEvery: 12,
+    map: [
+      '#############',
+      '#@P...<...M.#',
+      '#.###.....###',
+      '#.#M#.....#X#',
+      '#.#.#..^..#.#',
+      '#M..H.....#P#',
+      '#...#####...#',
+      '#############',
+    ],
+  },
+  {
+    name: 'Deadline', quorum: 5, par: 190, driftPeriod: 1, spawnEvery: 10,
+    map: [
+      '#############',
+      '#@P....M....#',
+      '#.###...#.#.#',
+      '#..#....#...#',
+      '#>.#.P..#.M.#',
+      '#..###..#...#',
+      '#....v..P...#',
+      '#H##H...#.###',
+      '#X..M...#..>#',
+      '#############',
+    ],
+  },
+  {
+    name: 'Overtime', quorum: 5, par: 200, driftPeriod: 1, spawnEvery: 10,
+    map: [
+      '###############',
+      '#@P.P.M....P..#',
+      '#.....#.......#',
+      '#..M..#..M..P.#',
+      '#.....v.......#',
+      '#...#...#...#.#',
+      '#....>....P...#',
+      '#.............#',
+      '#X.....M..<...#',
+      '###############',
+    ],
+  },
+  {
+    name: 'The quorum', quorum: 6, par: 220, driftPeriod: 1, spawnEvery: 10,
+    map: [
+      '################',
+      '#@P..M.....P.M.#',
+      '#....#..#......#',
+      '#..P.#..#..P...#',
+      '#....H..#..M...#',
+      '#..>.#..#......#',
+      '#....#..H.....M#',
+      '#M...#..#..<...#',
+      '#....^..#..#...#',
+      '#P...#..#..#.P.#',
+      '#....#......#..#',
+      '#..v........#X.#',
+      '################',
+    ],
+  },
+];
