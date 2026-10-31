@@ -1,5 +1,6 @@
 // Replays (DESIGN.md §18): record, encode, decode, and play back a game's
-// inputs. The core is pure: no DOM, no Math.random, no clock.
+// inputs. The core is pure: no DOM, no clock, and no randomness but the
+// seeded PRNG of §3.
 import { init, step } from './game.js';
 
 // A move's replay character, and back.
