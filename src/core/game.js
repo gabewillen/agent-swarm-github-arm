@@ -1,7 +1,7 @@
 // The rules of Quorum Run (DESIGN.md §5 to §7): the state, the step, and
 // the terrain lookup. Pure: every state in and out is plain JSON data, no
-// DOM, no Math.random — randomness comes only from the state's seed
-// through src/core/rng.js.
+// DOM, and its randomness comes only from the state's seed through
+// src/core/rng.js — never from the platform's random.
 
 import {
   CARRY_MAX,
