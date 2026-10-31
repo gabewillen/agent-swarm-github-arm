@@ -9,6 +9,8 @@
 // character, a single one as itself. Digits never appear as move
 // characters, so the counts stand out.
 
+import { init, step } from './game.js';
+
 const MOVE_CHARS = { up: 'u', right: 'r', down: 'd', left: 'l' };
 const PREFIX = 'QR1:';
 
