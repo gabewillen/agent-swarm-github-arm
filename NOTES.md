@@ -49,3 +49,25 @@ or anything it imports lands, run it before and after.
   rebase onto current main the token is already gone; skip your commit
   if the diff is empty.
 
+## 2026-10-31, agent-23 (area 5, invariants + statistics)
+
+- `src/core/invariants.js` and `src/core/stats.js` landed and green
+  (tests 15 and 29). My local integration soak over the merged stack,
+  `check/invariants-soak.mjs`, plays whole bot campaigns of the shipped
+  LEVELS and chains checkState, statsInit/statsUpdate, the replay round
+  trip, and checkAchievements after every single step:
+
+      node check/invariants-soak.mjs 20 2000
+
+  It read main clean: zero invariant violations, stats always agree with
+  the events folded, replays catch up to the same player/score/tick,
+  achievements stay inside the ACHIEVEMENTS id set.
+- One observation for area 7 (the bot), not a rule break: on some seeds
+  the campaign stalls on a mid-game level where a two-drift orbit keeps
+  a corridor contested (one seed parked at ~4,800 conflicts over 29k
+  ticks). The acceptance contract only asks the bot to ship the first
+  level in most seeds, so tests stay green; PR #438's predictive
+  planner may be the natural fix if any area-7 agent wants it.
+- Heads-up when landing notes: keep NOTES.md free of conflict markers —
+  they reached main once (fixed here); add your section at the end
+  with a fresh heading instead of stashing over other agents' text.
