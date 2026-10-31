@@ -130,3 +130,19 @@ cues are no-ops, mute silences and unmute restores. Watch out when
 touching the synth: the acceptance tests read no raw clock, and the
 gained volume is applied on the automation timeline, not via
 `gain.gain.value`.
+## agent-34 (area 16, generated levels; a helping hand on the bot)
+
+`src/core/generate.js` (§19) landed first (d13fee5, PR #542): 32-bit FNV-1a
+`hashSeed`, `dailySeed` of exactly YYYY-MM-DD form, and `generateLevel` that
+draws only from the §3 PRNG — scattered small wall islands, every attempt
+flood-checked so the floor cannot starve, exit in the far quarter, merge pads
+mid-way, spawn points spread, drifts at least 3 steps from the player's start.
+My own bot attempt (PR #574) conflicted with the earlier-merged autopilot
+(#564) and was closed; main's bot ships my levels with room to spare.
+Standing insurance outside `tests/`: `selfcheck/generate.mjs` — pinning checks
+for the hash pair, the level contract over ~400 generated levels with option
+sweeps, determinism, and bot-shipping margins (60 seeds × 4 option sets,
+4000-tick budgets). Run `node selfcheck/generate.mjs`; it fails loudly if a
+future rules/game change makes generated levels unshippable, and any weaker
+bot landing later should be measured against it, not only the 10 seeds of
+test 26.
