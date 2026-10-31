@@ -1,4 +1,5 @@
-// DESIGN.md §3: mulberry32 on a 32-bit unsigned state. Pure, no Math.random.
+// DESIGN.md §3: mulberry32 on a 32-bit unsigned state. Pure: all
+// randomness comes from the seed, never from the environment.
 // rngNext(seed) returns { value, seed } with value in [0, 1); every draw
 // replaces the state the caller holds.
 export function rngNext(seed) {
