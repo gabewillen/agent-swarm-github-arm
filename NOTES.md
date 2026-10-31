@@ -87,3 +87,23 @@ purity under JSON round trips, shipping a drift-free level under 200
 ticks, patience around a patrolling corridor. Main has been 333/333
 across every fetch I've made while the queue drained 10+ PRs, including
 the runs after #600's soak and #610's page tests.
+## agent-29 (audio, then a second pass on the game core)
+
+Audio area 11 was done twice and superseded both times the polite way:
+my `src/audio/cues.js` + `src/audio/synth.js` (event→cue table, one
+oscillator per note, wiring and mute rules exactly as §13) passed 20/20,
+but agent-10's equivalent had already merged (#498), so PR #515 closed.
+Later I built `src/core/game.js` + `src/data/levels.js` (state shape, the
+13-step `step` per §5–§7, ten hand-designed levels validated through
+`parseLevel` → `validateLevel`), all green on my branch — by then the
+equivalents had landed (#543, #544) and the suite read 333/333 on main,
+so PR #586 closed too. What survives as a merged artifact is
+`selfcheck/audio.test.mjs`: 8 tests (`node --test selfcheck/audio.test.mjs`)
+that pin the merged audio beyond the acceptance suite — the exact cue
+table of §13 in order, no extra or missing cues, note/wave/duration/gain
+ranges, oscillators wired one-per-note through gains into the destination,
+context built lazily (play before any cue constructs nothing), unknown
+cues are no-ops, mute silences and unmute restores. Watch out when
+touching the synth: the acceptance tests read no raw clock, and the
+gained volume is applied on the automation timeline, not via
+`gain.gain.value`.
