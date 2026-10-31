@@ -1,62 +1,47 @@
-// Player settings (DESIGN.md §17).
-//
-// Settings live somewhere persistent (localStorage in the page) as the JSON
-// of saveSettings; loadSettings reads that JSON back, forgiving anything it
-// cannot trust and falling back to the defaults. This module has no
-// imports: it stays loadable on its own, and §17 fixes the tick values it
-// returns ('normal' is §2's TICK_MS, 120).
+// §17 Player settings. `loadSettings` applies every valid field of a JSON
+// object over the defaults and ignores everything else; `saveSettings`
+// writes exactly the five keys; `tickMs` turns a speed into milliseconds
+// per tick in the browser.
 
-const TICK_MS = 120;
+import { TICK_MS } from '../core/constants.js';
 
-export const DEFAULT_SETTINGS = {
-  sound: true,
-  music: true,
-  volume: 0.8,
-  speed: 'normal',
-  colorblind: false,
-};
+export const DEFAULT_SETTINGS = { sound: true, music: true, volume: 0.8, speed: 'normal', colorblind: false };
 
-const SPEEDS = ['slow', 'normal', 'fast'];
+const SPEEDS = new Set(['slow', 'normal', 'fast']);
 
-function isPlainObject(v) {
-  return v !== null && typeof v === 'object' && !Array.isArray(v);
-}
-
-// The defaults with every valid field of src applied; wrong types, unknown
-// keys, and non-objects are ignored.
-function normalize(src) {
+export function loadSettings(text) {
   const out = { ...DEFAULT_SETTINGS };
-  if (typeof src.sound === 'boolean') out.sound = src.sound;
-  if (typeof src.music === 'boolean') out.music = src.music;
-  if (typeof src.volume === 'number' && Number.isFinite(src.volume)) {
-    out.volume = Math.min(1, Math.max(0, src.volume));
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return out;
   }
-  if (SPEEDS.includes(src.speed)) out.speed = src.speed;
-  if (typeof src.colorblind === 'boolean') out.colorblind = src.colorblind;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return out;
+  if (typeof parsed.sound === 'boolean') out.sound = parsed.sound;
+  if (typeof parsed.music === 'boolean') out.music = parsed.music;
+  if (typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)) {
+    out.volume = Math.min(1, Math.max(0, parsed.volume));
+  }
+  if (typeof parsed.speed === 'string' && SPEEDS.has(parsed.speed)) out.speed = parsed.speed;
+  if (typeof parsed.colorblind === 'boolean') out.colorblind = parsed.colorblind;
   return out;
 }
 
-// loadSettings(text) parses JSON and returns the defaults with every valid
-// field applied; anything else falls back to the defaults.
-export function loadSettings(text) {
-  let data = null;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = null;
-  }
-  return normalize(isPlainObject(data) ? data : {});
-}
-
-// saveSettings(settings) returns JSON holding exactly the five keys.
 export function saveSettings(settings) {
-  return JSON.stringify(normalize(isPlainObject(settings) ? settings : {}));
+  const s = settings && typeof settings === 'object' ? settings : DEFAULT_SETTINGS;
+  const out = {
+    sound: s.sound,
+    music: s.music,
+    volume: s.volume,
+    speed: s.speed,
+    colorblind: s.colorblind,
+  };
+  return JSON.stringify(out);
 }
 
-// tickMs(settings) is 160 for 'slow', TICK_MS (120) for 'normal', and 90
-// for 'fast'.
 export function tickMs(settings) {
-  const speed = isPlainObject(settings) ? settings.speed : 'normal';
+  const speed = settings && typeof settings === 'object' ? settings.speed : null;
   if (speed === 'slow') return 160;
   if (speed === 'fast') return 90;
   return TICK_MS;
