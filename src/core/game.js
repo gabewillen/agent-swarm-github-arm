@@ -1,3 +1,103 @@
+// Soil helpers for the drift half of the step (§6 steps 10 to 13).
+
+// §6 step 10: a drift's first passable direction, its own first and then
+// clockwise. A direction is passable to a drift when its target is not a
+// wall, not a hold, not the exit (open or not), and has no conflict on it.
+function driftTurn(drift, state, tile, conflicts) {
+  const from = CLOCKWISE.indexOf(drift.dir);
+  for (let i = 0; i < CLOCKWISE.length; i++) {
+    const dir = CLOCKWISE[(from + i) % CLOCKWISE.length];
+    const [dx, dy] = DIRS[dir];
+    const x = drift.x + dx;
+    const y = drift.y + dy;
+    const t = tile(x, y);
+    if (t === '#') continue;
+    if (t === 'H' || t === 'X') continue;
+    if (conflictAt(conflicts, x, y)) continue;
+    return { x, y, dir };
+  }
+  return drift; // boxed in: it stays and keeps its direction
+}
+
+// §6 step 11: the cells holding two or more drifts, in reading order.
+function collisionCells(drifts) {
+  const byCell = new Map();
+  for (const d of drifts) {
+    const key = d.x + ',' + d.y;
+    const cell = byCell.get(key) ?? { x: d.x, y: d.y, drifts: [] };
+    cell.drifts.push(d);
+    byCell.set(key, cell);
+  }
+  return [...byCell.values()].filter((c) => c.drifts.length >= 2)
+    .sort((a, b) => (a.y - b.y) || (a.x - b.x)) // reading order
+    .map((c) => ({ x: c.x, y: c.y }));
+}
+
+// §6 step 11: reversing a drift, up and down and left and right swap.
+function reversed(dir) {
+  return CLOCKWISE[(CLOCKWISE.indexOf(dir) + 2) % CLOCKWISE.length];
+}
+
+// §6 steps 10 to 12 on the draft in place: drifts move (only on a tick
+// when they move), collisions form, and hits land. Returns nothing; the
+// caller's draft carries the new drifts, conflicts, and events.
+function driftsAndHits(draft, state, before) {
+  // 10. Drifts move when this step's tick divides by the drift period.
+  const moved = draft.tick % state.level.driftPeriod === 0;
+  const terrainAt = (x, y) => tileAt(state, x, y);
+  if (moved) {
+    draft.drifts = state.drifts.map((d) => driftTurn(d, state, terrainAt, draft.conflicts));
+
+    // 11. Collisions, in reading order: every drift on a shared cell
+    // reverses; a conflict sits on the cell unless one is already there;
+    // one event per cell either way.
+    for (const c of collisionCells(draft.drifts)) {
+      for (const d of draft.drifts) {
+        if (d.x === c.x && d.y === c.y) d.dir = reversed(d.dir);
+      }
+      if (!conflictAt(draft.conflicts, c.x, c.y)) draft.conflicts.push({ x: c.x, y: c.y, ttl: CONFLICT_TICKS });
+      draft.events.push('conflict');
+    }
+  }
+
+  // 12. Hits, unless the player is still immune, whose immunity then drops
+  // by one. The player is hit by a drift now on their cell (every tick),
+  // or by a drift that swapped cells with them on a tick when drifts
+  // moved.
+  if (draft.invuln > 0) {
+    draft.invuln = state.invuln - 1;
+    return;
+  }
+  let hit = draft.drifts.some((d) => d.x === draft.player.x && d.y === draft.player.y);
+  if (!hit && moved) {
+    for (let i = 0; !hit && i < draft.drifts.length; i++) {
+      const now = draft.drifts[i];
+      const was = state.drifts[i];
+      hit = now.x === before.x && now.y === before.y
+        && was.x === draft.player.x && was.y === draft.player.y;
+    }
+  }
+  if (!hit) return;
+  if (draft.carried.length > 0) {
+    // A hit while carrying drops everything, without costing a life.
+    draft.carried = [];
+    draft.invuln = INVULN_TICKS;
+    draft.events.push('drop');
+    return;
+  }
+  draft.events.push('hit');
+  const lives = state.lives - 1;
+  if (lives === 0) {
+    draft.lives = 0;
+    draft.status = 'lost';
+    draft.events.push('lost');
+    return;
+  }
+  draft.lives = lives;
+  draft.player = { x: state.level.start.x, y: state.level.start.y };
+  draft.invuln = INVULN_TICKS;
+}
+
 // The rules of Quorum Run (DESIGN.md §5 to §7): the state, the step, and
 // the terrain lookup. Pure: every state in and out is plain JSON data, no
 // DOM, no Math.random — randomness comes only from the state's seed
@@ -5,8 +105,11 @@
 
 import {
   CARRY_MAX,
+  CLOCKWISE,
   COLORS,
+  CONFLICT_TICKS,
   DIRS,
+  INVULN_TICKS,
   PATCH_BASE,
   SAME_COLOR_BONUS,
   START_LIVES,
@@ -214,10 +317,32 @@ export function step(state, input) {
     return draft;
   }
 
-  // 10 to 13 (§6) — drifts move, conflicts form, hits land, and patches
-  // spawn — belong to the drift area of the swarm: they slot in here,
-  // between step 9 above and this return. `draft` is the evolving state
-  // (its tick is this step's tick) and draft.events holds the events so
-  // far. Until those land, the step returns as played out above.
+  // 10 to 13 (§6): drifts move, conflicts form, hits land, and patches
+  // spawn. draft.events holds the events so far.
+  const before = { x: state.player.x, y: state.player.y };
+
+  driftsAndHits(draft, state, before);
+
+  // 13. Spawns, while still playing and only when this level's tick
+  // divides by spawnEvery: one patch on a free spawn point, its point
+  // first and its colour second, both from the running seed. A point is
+  // free when no patch, the player, or a drift sits on it, and the level
+  // has room for one more patch.
+  if (draft.status === 'playing'
+    && draft.levelTicks % state.level.spawnEvery === 0
+    && draft.patches.length + draft.carried.length < state.level.spawns.length) {
+    const free = state.level.spawns.filter((s) =>
+      !draft.patches.some((p) => p.x === s.x && p.y === s.y)
+      && !(draft.player.x === s.x && draft.player.y === s.y)
+      && !draft.drifts.some((d) => d.x === s.x && d.y === s.y));
+    if (free.length > 0) {
+      const spot = rngInt(draft.seed, free.length);
+      const color = rngInt(spot.seed, COLORS);
+      draft.patches = draft.patches.concat([{ x: free[spot.value].x, y: free[spot.value].y, color: color.value }]);
+      draft.seed = color.seed;
+      draft.events.push('spawn');
+    }
+  }
+
   return draft;
 }
