@@ -1,590 +1,643 @@
-// Quorum Run — the browser entry point (DESIGN.md §15).
-//
-// This is the only module that touches the DOM: it owns the canvas, the
-// frame loop, the menu screens, the audio contexts, and the touch/keyboard
-// plumbing. It runs `step` every TICK_MS (adjusted by player settings)
-// with the queued input, draws each frame with `drawList` + `paint` on
-// requestAnimationFrame, plays `cuesFor` of each step's events, shows the
-// title menu first, and (per §15) lets a bot demo play behind the title.
+// Quorum Run — the browser entry (DESIGN.md §1, §15). The only module that
+// touches the DOM, window, localStorage, or a real AudioContext; everything
+// it uses is pure, so node can test the rest. Serve the repo and open
+// index.html: this file wires the core, renderer, input, audio, and UI
+// into a game — a title menu first, then the loop.
 
 import { TICK_MS } from './core/constants.js';
 import { init, step } from './core/game.js';
 import { botInput } from './core/bot.js';
-import { dailySeed, generateLevel } from './core/generate.js';
-import { editorInit, editorPaint, editorFill, editorErrors } from './core/editor.js';
+import { LEVELS } from './data/levels.js';
 import { PALETTE } from './render/palette.js';
-import { layout, drawList, paint } from './render/draw.js';
-import { particleOps, particlesFor, stepParticles } from './render/particles.js';
-import { attachKeyboard, queuePush, queueTake, swipeToInput } from './input/keys.js';
+import { HUD_HEIGHT, layout, drawList, paint } from './render/draw.js';
+import { particlesFor, stepParticles, particleOps } from './render/particles.js';
+import { keyToInput, swipeToInput, queuePush, queueTake, attachKeyboard } from './input/keys.js';
 import { cuesFor } from './audio/cues.js';
 import { createAudio } from './audio/synth.js';
-import { bar, scheduleBar, tempo } from './audio/music.js';
 import { menuInit, menuReduce, menuItems } from './ui/menu.js';
-import { loadSettings, saveSettings, tickMs } from './ui/settings.js';
 import { addScore, formatScore, parseTable } from './ui/scores.js';
+import { DEFAULT_SETTINGS, loadSettings, saveSettings, tickMs } from './ui/settings.js';
+import { dailySeed, generateLevel } from './core/generate.js';
+import {
+  editorInit, editorPaint, editorFill, editorResize, editorErrors,
+  editorExport, editorImport,
+} from './core/editor.js';
+import { ACHIEVEMENTS, checkAchievements } from './core/achievements.js';
+import { statsInit, statsUpdate, statsLines } from './core/stats.js';
+import { bar, scheduleBar, tempo } from './audio/music.js';
 
-const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-const SETTING_KEY = 'quorum-run-settings';
-const SCORE_KEY = 'quorum-run-scores';
-const TOOL_CHARS = ['#', '.', 'P', 'M', 'X', 'H', '@', '^', '>', 'v', '<'];
+// ---------- persisted bits ----------
 
-const HELP_LINES = [
-  'Move with the arrow keys or WASD. P or Escape pauses.',
-  'Patches (colored) appear on spawn points as you play.',
-  'Walk over a patch to pick it up; carry up to 3.',
-  'Stand on a merge pad (M) to merge what you carry.',
-  'Reach the quorum: holds and the exit (X) open.',
-  'Take the exit to ship the level. Beat the par for style.',
-  'Drifts (red) hurt: carrying, they spill your patches;',
-  'empty-handed, they cost a life. Conflicts block.',
-];
+const SETTINGS_KEY = 'quorum.run.settings';
+const SCORES_KEY = 'quorum.run.scores';
+const ACHIEVEMENTS_KEY = 'quorum.run.achievements';
+const EDITOR_KEY = 'quorum.run.editor';
 
-const CELL_FILL = {
-  '#': PALETTE.wall,
-  '.': PALETTE.floor,
-  '@': PALETTE.accent,
-  P: PALETTE.agents[1],
-  M: PALETTE.agents[3],
-  X: PALETTE.accent,
-  H: PALETTE.dim,
-  '^': PALETTE.danger,
-  '>': PALETTE.danger,
-  v: PALETTE.danger,
-  '<': PALETTE.danger,
-};
+function storeGet(key, fallback) {
+  try {
+    return window.localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
 
-// --- boot ----------------------------------------------------------------
+function storeSet(key, text) {
+  try {
+    window.localStorage.setItem(key, text);
+  } catch {
+    // storage may be unavailable (private mode); the game plays anyway
+  }
+}
+
+// ---------- canvas ----------
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const AudioCtor = window.AudioContext || window.webkitAudioContext || null;
-const audio = createAudio(AudioCtor);
+let view = { width: canvas.width, height: canvas.height };
 
-let view = fit(canvas);
-window.addEventListener('resize', () => {
-  view = fit(canvas);
+function fit() {
+  view = { width: Math.max(160, window.innerWidth), height: Math.max(120, window.innerHeight) };
+  canvas.width = view.width;
+  canvas.height = view.height;
+}
+fit();
+window.addEventListener('resize', fit);
+
+// ---------- state the page owns ----------
+
+let settings;
+try {
+  settings = loadSettings(storeGet(SETTINGS_KEY, ''));
+} catch {
+  settings = { ...DEFAULT_SETTINGS };
+}
+if (!settings) settings = { ...DEFAULT_SETTINGS };
+
+let scores = parseTable(storeGet(SCORES_KEY, '[]'));
+if (!Array.isArray(scores)) scores = [];
+
+let unlocked = [];
+try {
+  const ids = JSON.parse(storeGet(ACHIEVEMENTS_KEY, '[]'));
+  if (Array.isArray(ids)) unlocked = ids.filter((x) => typeof x === 'string');
+} catch {
+  unlocked = [];
+}
+
+// Sound effects: the context is built lazily by the synth on the first
+// audible play, which also keeps browsers happy about autoplay.
+const AudioCtor = window.AudioContext || window.webkitAudioContext;
+const audio = createAudio(AudioCtor);
+audio.setMuted(!settings.sound);
+
+let menu = menuInit(); // the title menu shows first
+let demoSeed = 20250101;
+let demo = null;
+let state = null; // the played game
+let queue = [];
+let particles = [];
+let particleSeed = randomSeed();
+let stats = statsInit();
+let editor = loadEditor(); // a persisted map, else a fresh 20x13
+let brush = 0;
+let lastCell = null;
+let painting = false;
+let origin = null; // where a touch swipe started
+let flash = null; // { text, until }
+let toastText = '';
+let toastTicks = 0;
+
+// The attract mode: a bot plays behind the title screen.
+try {
+  demo = init(demoSeed, { levels: LEVELS });
+} catch (err) {
+  demo = null;
+  console.error('quorum run: demo did not start', err);
+}
+
+function loadEditor() {
+  let def = null;
+  try {
+    def = editorImport(storeGet(EDITOR_KEY, ''));
+  } catch {
+    def = null;
+  }
+  return def ?? editorInit(20, 13);
+}
+
+// ---------- starting games ----------
+
+function randomSeed() {
+  return Math.floor(Math.random() * 4294967296) >>> 0;
+}
+
+function resetRun() {
+  queue = [];
+  particles = [];
+  stats = statsInit();
+}
+
+function startRun(kind) {
+  resetRun();
+  if (kind === 'daily') {
+    const date = new Date().toISOString().slice(0, 10);
+    const seed = dailySeed(date);
+    state = init(seed, { levels: [generateLevel(seed)] });
+  } else {
+    state = init(randomSeed(), { levels: LEVELS });
+  }
+}
+
+function startCustomRun() {
+  resetRun();
+  try {
+    state = init(randomSeed(), { levels: [editor] });
+  } catch (err) {
+    console.error('quorum run: custom level did not load', err);
+    flash = { text: 'custom level did not load; starting a campaign', until: performance.now() + 3000 };
+    state = init(randomSeed(), { levels: LEVELS });
+  }
+}
+
+// ---------- sound and music ----------
+
+function applySound(on) {
+  audio.setMuted(!on);
+  settings = { ...settings, sound: on };
+  storeSet(SETTINGS_KEY, saveSettings(settings));
+  if (on) musicStart();
+  else musicStop();
+}
+
+// Background music: generated bars on their own context, started once a
+// gesture happens (browsers refuse audio before one).
+const music = { ctx: null, next: 0, index: 0, timer: null };
+
+function musicStart() {
+  if (music.timer || !settings.music || !AudioCtor) return;
+  try {
+    music.ctx = new AudioCtor();
+  } catch {
+    return;
+  }
+  music.next = music.ctx.currentTime + 0.1;
+  music.index = 0;
+  music.timer = setInterval(musicPump, 350);
+}
+
+function musicStop() {
+  if (music.timer) clearInterval(music.timer);
+  music.timer = null;
+}
+
+function musicPump() {
+  if (!music.ctx) {
+    musicStop();
+    return;
+  }
+  try {
+    const idx = state ? state.levelIndex : 0;
+    const bpm = tempo(idx);
+    const barSec = (30 / bpm) * 8; // eight steps of 30/bpm seconds
+    const gain = 0.09 * settings.volume;
+    if (music.next < music.ctx.currentTime) music.next = music.ctx.currentTime + 0.05;
+    while (music.next < music.ctx.currentTime + 1.2) {
+      scheduleBar(music.ctx, bar(idx, music.index), music.next, bpm, gain);
+      music.index += 1;
+      music.next += barSec;
+    }
+  } catch {
+    musicStop(); // never let the music take the game down
+  }
+}
+
+// ---------- player input ----------
+
+function onInput(input) {
+  musicStart();
+  if (!input) return;
+  const screen = menu.screen;
+  if (screen === 'playing' || screen === 'paused') {
+    if (input.pause) {
+      // p and esc both read as pause: while playing they pause, from the
+      // pause screen they quit to the title (enter or a tap resumes).
+      menu = menuReduce(menu, screen === 'paused' ? 'back' : 'pause');
+    } else {
+      queue = queuePush(queue, input);
+    }
+  } else if (screen === 'title') {
+    if (input.move) menu = menuReduce(menu, input.move); // up / down pick the item
+  } else if (screen === 'help' || screen === 'editor') {
+    // p and esc read as back on these screens
+    if (input.pause) menu = menuReduce(menu, 'back');
+  }
+}
+
+attachKeyboard(window, onInput); // lives as long as the page does
+
+// Raw keys that keyToInput does not map: enter to pick, and the editor's
+// own keys.
+window.addEventListener('keydown', (ev) => {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    musicStart();
+    handleEnter();
+    return;
+  }
+  if (menu.screen === 'editor' && applyEditorKey(ev.key)) ev.preventDefault();
 });
 
-let settings = loadSettings(readStore(SETTING_KEY) || '');
-let scores = parseTable(readStore(SCORE_KEY) || '');
-let menu = Object.assign(menuInit(), { sound: settings.sound });
-audio.setMuted(settings.sound === false);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && menu.screen === 'playing') menu = menuReduce(menu, 'pause');
+});
 
-let st = null; // the live game state
-let queue = []; // queued inputs (DESIGN.md §12)
-let particles = [];
-let pseed = randomSeed();
-let demo = null; // the attract-mode game behind the title
-let demoHold = 0;
-let editorDef = editorInit(16, 12);
-let editorTool = '#';
-let editorMetrics = null;
-let editorPalette = null;
-let pointer = null;
-let barCount = 0;
-let barClock = 0;
-let audioCtx = null;
-let acc = 0;
-let last = performance.now();
-
-// --- frame loop ----------------------------------------------------------
-
-function frame(now) {
-  const dt = Math.min(1000, now - last);
-  last = now;
-  if (menu.screen === 'playing' || menu.screen === 'title' || menu.screen === 'help' || menu.screen === 'over') {
-    acc += dt;
-    const iv = tickMs(settings) || TICK_MS;
-    while (acc >= iv) {
-      acc -= iv;
-      tickActive();
-    }
-  } else {
-    acc = 0;
-  }
-  ensureDemo();
-  pumpMusic();
-  draw();
-  requestAnimationFrame(frame);
-}
-requestAnimationFrame(frame);
-
-// One step of whatever is on stage: the live game on the playing screen,
-// the attract-mode demo behind the title and help screens.
-function tickActive() {
-  if (menu.screen === 'title' || menu.screen === 'help') {
-    if (demo && demo.status !== 'playing') {
-      if (--demoHold <= 0) resetDemo();
-    } else if (demo) {
-      demo = step(demo, botInput(demo));
+// Touch and mouse on the canvas: taps and swipes play, drags paint in the
+// editor.
+canvas.addEventListener('pointerdown', (ev) => {
+  musicStart();
+  if (menu.screen !== 'editor') {
+    if (ev.pointerType !== 'mouse') {
+      origin = { x: ev.clientX, y: ev.clientY };
+      ev.preventDefault();
     }
     return;
   }
-  if (menu.screen !== 'playing' || !st || st.status !== 'playing') return;
-  liveStep();
+  painting = true;
+  paintAt(ev, ev.shiftKey);
+  ev.preventDefault();
+});
+
+canvas.addEventListener('pointermove', (ev) => {
+  if (menu.screen !== 'editor' || !painting || !(ev.buttons & 1)) return;
+  paintAt(ev, false);
+});
+
+canvas.addEventListener('pointerup', (ev) => {
+  if (menu.screen === 'editor') {
+    painting = false;
+    return;
+  }
+  if (!origin) return;
+  const dx = ev.clientX - origin.x;
+  const dy = ev.clientY - origin.y;
+  origin = null;
+  const input = swipeToInput(dx, dy);
+  if (input) gesture(input);
+  else handleEnter(); // a tap picks
+});
+
+function gesture(input) {
+  const screen = menu.screen;
+  if (screen === 'playing' || screen === 'paused') {
+    queue = queuePush(queue, input);
+  } else if (screen === 'title' && (input.move === 'up' || input.move === 'down')) {
+    menu = menuReduce(menu, input.move);
+  }
 }
 
-// Runs one playing step of the live game from the queued input (§15: a step
-// every TICK_MS with the queued input) and wires its fallout — cues (§13),
-// particles (§23), and the game-over transition (§14).
-function liveStep() {
-  if (!st || st.status !== 'playing') return;
-  const take = queueTake(queue);
-  queue = take.queue;
-  const next = step(st, take.input);
-  st = next;
-  for (const name of cuesFor(next.events)) {
-    audio.play(name);
+function handleEnter() {
+  const screen = menu.screen;
+  if (screen === 'editor') {
+    const errs = editorErrors(editor);
+    if (errs.length > 0) {
+      flash = { text: 'fix the map first: ' + errs.join(', '), until: performance.now() + 3000 };
+      return;
+    }
+    menu = menuReduce(menu, 'select'); // editor + select plays the custom level
+    startCustomRun();
+    return;
   }
-  if (next.events.length > 0) {
-    const made = particlesFor(next, pseed);
+  if (screen === 'title') {
+    const before = menu;
+    const next = menuReduce(menu, 'select');
+    menu = next;
+    if (next.screen === 'playing') startRun(next.mode === 'daily' ? 'daily' : 'campaign');
+    if (next.screen === 'title' && next.sound !== before.sound) applySound(next.sound);
+    return;
+  }
+  // paused, help, and over screens all go forward on select
+  menu = menuReduce(menu, 'select');
+}
+
+// ---------- the level editor ----------
+
+const BRUSHES = ['#', '.', 'P', 'M', 'X', 'H', '^', '>', 'v', '<'];
+
+function editorFrame() {
+  let w = 1;
+  for (const row of editor.map) w = Math.max(w, row.length);
+  return { width: w, height: editor.map.length };
+}
+
+function canvasPoint(ev) {
+  const r = canvas.getBoundingClientRect();
+  return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+}
+
+function paintAt(ev, fill) {
+  const p = canvasPoint(ev);
+  const lo = layout(editorFrame(), view);
+  if (!lo || lo.cell < 2) return;
+  const cx = Math.floor((p.x - lo.ox) / lo.cell);
+  const cy = Math.floor((p.y - lo.oy) / lo.cell);
+  if (cy < 0 || cx < 0) return;
+  const row = editor.map[cy];
+  if (row === undefined || cx >= row.length) return;
+  lastCell = { x: cx, y: cy };
+  const ch = BRUSHES[brush];
+  editor = fill ? editorFill(editor, cx, cy, ch) : editorPaint(editor, cx, cy, ch);
+  storeSet(EDITOR_KEY, editorExport(editor));
+}
+
+function applyEditorKey(key) {
+  const digit = '1234567890'.indexOf(key);
+  if (digit >= 0) {
+    brush = digit;
+    return true;
+  }
+  switch (key) {
+    case 'f': {
+      if (lastCell) editor = editorFill(editor, lastCell.x, lastCell.y, BRUSHES[brush]);
+      storeSet(EDITOR_KEY, editorExport(editor));
+      return true;
+    }
+    case '[': {
+      editor = editorResize(editor, editorFrame().width - 1, editor.map.length);
+      storeSet(EDITOR_KEY, editorExport(editor));
+      return true;
+    }
+    case ']': {
+      editor = editorResize(editor, editorFrame().width + 1, editor.map.length);
+      storeSet(EDITOR_KEY, editorExport(editor));
+      return true;
+    }
+    case '-': {
+      editor = editorResize(editor, editorFrame().width, editor.map.length - 1);
+      storeSet(EDITOR_KEY, editorExport(editor));
+      return true;
+    }
+    case '+':
+    case '=': {
+      editor = editorResize(editor, editorFrame().width, editor.map.length + 1);
+      storeSet(EDITOR_KEY, editorExport(editor));
+      return true;
+    }
+    case 'e': {
+      const text = prompt('Quorum Run level JSON — edit and OK to import:', editorExport(editor));
+      if (text === null) return true;
+      const def = editorImport(text);
+      if (def) {
+        editor = def;
+        flash = { text: 'level imported', until: performance.now() + 2500 };
+      } else {
+        flash = { text: 'that did not parse as a level', until: performance.now() + 2500 };
+      }
+      storeSet(EDITOR_KEY, editorExport(editor));
+      return true;
+    }
+    case 'n': {
+      const name = prompt('Name the level:', editor.name);
+      if (name) editor = { ...editor, name: String(name).slice(0, 40) };
+      storeSet(EDITOR_KEY, editorExport(editor));
+      return true;
+    }
+    case 'q': {
+      const v = parseInt(prompt('Merge patches needed to open the exits:', String(editor.quorum)), 10);
+      if (v >= 1 && v <= 20) editor = { ...editor, quorum: v };
+      storeSet(EDITOR_KEY, editorExport(editor));
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+// ---------- simulation (the clock) ----------
+
+function tickAll() {
+  const screen = menu.screen;
+  if (screen === 'playing' && state && state.status === 'playing') tickPlayer();
+  else if ((screen === 'title' || screen === 'help') && demo) tickDemo();
+}
+
+function tickPlayer() {
+  const taken = queueTake(queue);
+  queue = taken.queue;
+  const prev = state;
+  state = step(state, taken.input);
+  const events = state.events;
+  if (events.length) {
+    for (const cue of cuesFor(events)) {
+      try {
+        audio.play(cue);
+      } catch {
+        // a bad synth day must not stop the run
+      }
+    }
+    const made = particlesFor(state, particleSeed);
     particles = particles.concat(made.particles);
-    pseed = made.seed;
+    particleSeed = made.seed >>> 0;
   }
-  if (next.status !== 'playing') {
-    scores = addScore(scores, { name: 'YOU', score: next.score });
-    store(SCORE_KEY, JSON.stringify(scores));
+  if (particles.length) particles = stepParticles(particles);
+  const earned = checkAchievements(prev, state, unlocked);
+  if (earned.length) {
+    unlocked = unlocked.concat(earned);
+    storeSet(ACHIEVEMENTS_KEY, JSON.stringify(unlocked));
+    const got = ACHIEVEMENTS.find((a) => a.id === earned[0]);
+    toastText = 'unlocked: ' + (got ? got.title : earned[0]);
+    toastTicks = 20;
+  }
+  stats = statsUpdate(stats, prev, state, taken.input);
+  if (toastTicks > 0) toastTicks -= 1;
+  if (state.status !== 'playing') {
+    scores = addScore(scores, { name: 'YOU', score: state.score });
+    storeSet(SCORES_KEY, JSON.stringify(scores));
     menu = menuReduce(menu, 'gameover');
   }
 }
 
-// --- starting games ------------------------------------------------------
+function tickDemo() {
+  try {
+    demo = step(demo, botInput(demo));
+    if (demo.status !== 'playing') {
+      demoSeed = (demoSeed + 1) >>> 0;
+      demo = init(demoSeed, { levels: LEVELS });
+    }
+  } catch (err) {
+    console.error('quorum run: attract mode hiccup', err);
+    demoSeed = (demoSeed + 1) >>> 0;
+    try {
+      demo = init(demoSeed, { levels: LEVELS });
+    } catch {
+      demo = null;
+    }
+  }
+}
 
-function newGame(mode) {
-  let seed = randomSeed();
-  let theInit;
-  if (mode === 'daily') {
-    seed = dailySeed(todayString()) ?? seed;
-    theInit = init(seed, { levels: [generateLevel(seed)] });
-  } else if (mode === 'custom') {
-    theInit = init(1, { levels: [editorDef] });
+setInterval(tickAll, tickMs(settings) || TICK_MS);
+
+// ---------- drawing (every frame) ----------
+
+function uiText(text, x, y, color, size) {
+  return { op: 'text', kind: 'ui', x, y, text, color, size };
+}
+
+function uiRect(x, y, w, h, color) {
+  return { op: 'rect', kind: 'ui', x, y, w, h, color };
+}
+
+const HELP_LINES = [
+  'the courier picks up patches at P points, carries up to three,',
+  'and merges them on a pad M: 1 patch 100, 2 patches 400, 3 patches 900,',
+  'plus 50 per patch when the colours match.',
+  'meet the level quorum and the exit X and hold doors H open.',
+  'reach the exit before par for a time bonus.',
+  '',
+  'drifts patrol the grid. touch a drift while carrying and you drop',
+  'everything; touch one empty-handed and you lose a life.',
+  'two drifts running into each other leave a conflict that blocks both.',
+  '',
+  'arrows or wasd move, p or esc pauses, enter picks.',
+];
+
+function render() {
+  requestAnimationFrame(render);
+  if (!ctx) return;
+  ctx.textAlign = 'left';
+  const screen = menu.screen;
+  if (screen === 'title' || screen === 'help') {
+    if (demo) paint(ctx, drawList(demo, view));
+    else {
+      ctx.fillStyle = PALETTE.bg;
+      ctx.fillRect(0, 0, view.width, view.height);
+    }
+    paint(ctx, [uiRect(0, 0, view.width, view.height, 'rgba(17,17,17,0.78)')]);
+    paint(ctx, screen === 'title' ? titleOps() : helpOps());
+  } else if (screen === 'editor' && editor) {
+    paint(ctx, editorOps());
+  } else if ((screen === 'playing' || screen === 'paused') && state) {
+    paint(ctx, drawList(state, view));
+    if (particles.length) {
+      try {
+        paint(ctx, particleOps(particles, layout(state.level, view)));
+      } catch {
+        // particles are decoration only
+      }
+    }
+    paint(ctx, playOps());
+  } else if (screen === 'over' && state) {
+    paint(ctx, drawList(state, view));
+    paint(ctx, overOps());
   } else {
-    theInit = init(seed);
-  }
-  st = theInit;
-  queue = [];
-  particles = [];
-  pseed = randomSeed();
-  barCount = 0;
-  barClock = 0;
-  acc = 0;
-}
-
-function resetDemo() {
-  demo = init(randomSeed());
-  demoHold = 240; // frames (~4s) to linger on the demo's end screen
-  particles = [];
-}
-
-function ensureDemo() {
-  if ((menu.screen === 'title' || menu.screen === 'help') && !demo) resetDemo();
-}
-
-// --- menu actions --------------------------------------------------------
-
-// The pause key and the tap both land here; entering or leaving the paused
-// screen always queues a pause input so the menu and `status.paused` agree
-// (DESIGN.md §6 rule 2, §14).
-function togglePause() {
-  if (!st || (menu.screen !== 'playing' && menu.screen !== 'paused')) return;
-  queue = queuePush(queue, { move: null, pause: true });
-  menu = menuReduce(menu, 'pause');
-}
-
-function menuAction(action) {
-  if (menu.screen === 'title' && action === 'select') {
-    if (menu.selected === 0) newGame('campaign');
-    else if (menu.selected === 1) newGame('daily');
-  }
-  if (menu.screen === 'editor' && action === 'select') {
-    if (editorErrors(editorDef).length > 0) return; // fix the level first
-    newGame('custom');
-  }
-  menu = menuReduce(menu, action);
-  if (settings.sound !== menu.sound) {
-    settings = Object.assign({}, settings, { sound: menu.sound });
-    audio.setMuted(!menu.sound);
-    store(SETTING_KEY, saveSettings(settings));
+    ctx.fillStyle = PALETTE.bg;
+    ctx.fillRect(0, 0, view.width, view.height);
   }
 }
 
-// Maps a KeyboardEvent-mapped input to its effect on the current screen
-// (DESIGN.md §16: arrows and WASD move in play, Enter selects, P/Escape pause).
-function keyAction(input) {
-  if (menu.screen === 'playing') {
-    if (input.pause) return togglePause();
-    if (st && st.paused) return; // paused: only the pause key speaks
-    if (input.move) queue = queuePush(queue, input);
-    return;
+function titleOps() {
+  const { width, height } = view;
+  const x = Math.floor(width / 2);
+  const ops = [];
+  ops.push(uiText('QUORUM RUN', x, Math.floor(height * 0.2), PALETTE.accent, Math.min(46, Math.floor(width / 14))));
+  ops.push(uiText('pick patches, merge them, ship the level', x, Math.floor(height * 0.2) + 28, PALETTE.dim, 14));
+  const items = menuItems(menu);
+  const top = Math.floor(height * 0.38);
+  items.forEach((label, i) => {
+    const sel = i === menu.selected;
+    ops.push(uiText((sel ? '> ' : '') + label, x, top + i * 30, sel ? PALETTE.accent : PALETTE.text, 20));
+  });
+  if (scores.length) {
+    ops.push(uiText('best ' + formatScore(scores[0].score), x, top + items.length * 30 + 10, PALETTE.dim, 14));
+  }
+  ops.push(uiText('arrows or wasd to pick, enter to play, swipe or tap on touch', x, height - 26, PALETTE.dim, 13));
+  return ops;
+}
+
+function helpOps() {
+  const { width, height } = view;
+  const x = Math.floor(width / 2);
+  const ops = [];
+  ops.push(uiText('QUORUM RUN — how to play', x, Math.floor(height * 0.14), PALETTE.accent, 24));
+  HELP_LINES.forEach((line, i) => {
+    ops.push(uiText(line, x, Math.floor(height * 0.2) + i * 20, PALETTE.text, 14));
+  });
+  ops.push(uiText('enter or esc back', x, height - 26, PALETTE.dim, 13));
+  return ops;
+}
+
+function playOps() {
+  const { width, height } = view;
+  const ops = [];
+  ops.push(uiText(state.level.name, 8, height - 8, PALETTE.dim, 12));
+  if (toastTicks > 0 && toastText) {
+    ops.push(uiText(toastText, Math.floor(width / 2), Math.floor(height * 0.78), PALETTE.accent, 18));
   }
   if (menu.screen === 'paused') {
-    if (input.pause) return togglePause();
-    if (!input.move) {
-      queue = queuePush(queue, { move: null, pause: true }); // resume
-      menu = menuReduce(menu, 'select');
-    }
-    return;
+    ops.push(uiText('PAUSED', Math.floor(width / 2), Math.floor(height / 2), PALETTE.accent, 34));
+    ops.push(uiText('enter resumes, esc quits to the title', Math.floor(width / 2), Math.floor(height / 2) + 30, PALETTE.dim, 14));
   }
-  if (menu.screen === 'over') {
-    if (!input.move) menuAction('select');
-    return;
-  }
-  if (menu.screen === 'editor') {
-    if (input.pause) return menuAction('back');
-    if (!input.move) return menuAction('select');
-    return;
-  }
-  // title and help
-  if (input.pause) return menuAction('back');
-  if (input.move === 'up') return menuAction('up');
-  if (input.move === 'down') return menuAction('down');
-  if (!input.move) return menuAction('select');
+  return ops;
 }
 
-// --- pointer input (§16: swipe to move, tap to select) -------------------
-
-function pointerCell(e) {
-  if (!editorMetrics || !editorDef) return null;
-  const r = canvas.getBoundingClientRect();
-  const sx = canvas.width / Math.max(1, r.width);
-  const sy = canvas.height / Math.max(1, r.height);
-  const x = (e.clientX - r.left) * sx;
-  const y = (e.clientY - r.top) * sy;
-  const m = editorMetrics;
-  const cx = Math.floor((x - m.ox) / m.cell);
-  const cy = Math.floor((y - m.oy) / m.cell);
-  if (cx < 0 || cy < 0 || cx >= editorDef.width || cy >= editorDef.height) return null;
-  return { x: cx, y: cy };
+function overOps() {
+  const { width, height } = view;
+  const x = Math.floor(width / 2);
+  const won = state.status === 'won';
+  const ops = [];
+  ops.push(uiText(won ? 'ALL MERGED' : 'GAME OVER', x, Math.floor(height * 0.14), won ? PALETTE.accent : PALETTE.danger, 32));
+  statsLines(stats).forEach((line, i) => {
+    ops.push(uiText(line, x, Math.floor(height * 0.22) + i * 22, PALETTE.text, 16));
+  });
+  ops.push(uiText('best scores', x, Math.floor(height * 0.46), PALETTE.dim, 14));
+  scores.slice(0, 5).forEach((entry, i) => {
+    ops.push(uiText((i + 1) + '. ' + formatScore(entry.score) + '  ' + entry.name, x, Math.floor(height * 0.46) + 22 + i * 20, PALETTE.text, 15));
+  });
+  ops.push(uiText('enter: title', x, height - 26, PALETTE.dim, 13));
+  return ops;
 }
 
-function editorApply(cell, flood) {
-  if (!cell) return;
-  if (flood) editorDef = editorFill(editorDef, cell.x, cell.y, editorTool);
-  else editorDef = editorPaint(editorDef, cell.x, cell.y, editorTool);
-}
-
-canvas.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  unlockAudio();
-  const cell = menu.screen === 'editor' ? pointerCell(e) : null;
-  pointer = { x: e.clientX, y: e.clientY, t: performance.now(), cell, flood: e.shiftKey === true };
-  if (cell) editorApply(cell, pointer.flood);
-});
-canvas.addEventListener('pointermove', (e) => {
-  if (!pointer || menu.screen !== 'editor' || !pointer.cell) return;
-  const cell = pointerCell(e);
-  if (cell && (cell.x !== pointer.cell.x || cell.y !== pointer.cell.y)) {
-    pointer.cell = cell;
-    editorApply(cell, pointer.flood);
-  }
-});
-canvas.addEventListener('pointerup', (e) => {
-  if (!pointer) return;
-  const dx = e.clientX - pointer.x;
-  const dy = e.clientY - pointer.y;
-  const dt = performance.now() - pointer.t;
-  const wasEditor = menu.screen === 'editor';
-  const tailCell = wasEditor ? pointerCell(e) : null;
-  pointer = null;
-  if (tailCell) {
-    editorApply(tailCell, false);
-  } else if (wasEditor && editorPalette && yOf(e) >= editorPalette.y0) {
-    pickTool(e);
-  } else if (Math.abs(dx) < 8 && Math.abs(dy) < 8 && dt < 400) {
-    if (menu.screen === 'playing' || menu.screen === 'paused') togglePause();
-    else if (menu.screen !== 'editor') menuAction('select');
-  } else {
-    const input = swipeToInput(dx, dy);
-    if (input && menu.screen === 'playing' && st && !st.paused) queue = queuePush(queue, input);
-  }
-});
-
-function yOf(e) {
-  const r = canvas.getBoundingClientRect();
-  return (e.clientY - r.top) * (canvas.height / Math.max(1, r.height));
-}
-
-function pickTool(e) {
-  if (!editorPalette) return;
-  const r = canvas.getBoundingClientRect();
-  const x = (e.clientX - r.left) * (canvas.width / Math.max(1, r.width));
-  const i = Math.floor((x - editorPalette.x0) / editorPalette.sw);
-  if (i >= 0 && i < TOOL_CHARS.length) editorTool = TOOL_CHARS[i];
-}
-
-const detachKeyboard = attachKeyboard(window, keyAction);
-window.addEventListener('pagehide', () => {
-  if (typeof detachKeyboard === 'function') detachKeyboard();
-}, { once: true });
-
-// --- audio ---------------------------------------------------------------
-
-function unlockAudio() {
-  if (!AudioCtor) return;
-  if (!audioCtx) {
-    try {
-      audioCtx = new AudioCtor();
-    } catch {
-      audioCtx = null;
-    }
-  }
-  if (audioCtx && audioCtx.state === 'suspended') {
-    try {
-      const woke = audioCtx.resume();
-      if (woke && typeof woke.catch === 'function') woke.catch(() => {});
-    } catch {
-      /* context stays suspended; cues still try other means */
-    }
-  }
-}
-
-// Background music per §24: schedule the next bar in wall-clock time while
-// the game plays.
-function pumpMusic() {
-  const running = audioCtx && audioCtx.state === 'running';
-  if (!settings.music || !running || !st || st.status !== 'playing' || st.paused || menu.screen !== 'playing') {
-    barClock = 0;
-    return;
-  }
-  const t = audioCtx.currentTime;
-  if (barClock <= t) {
-    const bpm = tempo(st.levelIndex);
-    const ahead = t + 0.08;
-    scheduleBar(audioCtx, bar(st.levelIndex, barCount), ahead, bpm, Math.max(0.02, Math.min(1, settings.volume) * 0.18));
-    barClock = ahead + 240 / bpm; // a bar is 8 steps of 30/bpm seconds (§24)
-    barCount += 1;
-  }
-}
-
-// --- drawing -------------------------------------------------------------
-
-function draw() {
-  const w = view.width;
-  const h = view.height;
-  ctx.globalAlpha = 1;
-  switch (menu.screen) {
-    case 'title':
-    case 'help': {
-      drawAttract();
-      drawMenuChrome(w, h);
-      break;
-    }
-    case 'playing':
-    case 'paused':
-      drawGame();
-      break;
-    case 'over':
-      drawGame();
-      drawGameOver(w, h);
-      break;
-    case 'editor':
-      drawEditor(w, h);
-      break;
-    default: {
-      ctx.fillStyle = PALETTE.bg;
-      ctx.fillRect(0, 0, w, h);
-    }
-  }
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-}
-
-function drawGame() {
-  if (!st) return;
-  const ops = drawList(st, view);
-  paint(ctx, ops);
-  if (particles.length > 0) {
-    const lay = layout(st.level, view);
-    paint(ctx, particleOps(particles, lay));
-  }
-}
-
-function drawAttract() {
-  if (!demo) return;
-  const prev = ctx.globalAlpha;
-  ctx.globalAlpha = 0.35;
-  paint(ctx, drawList(demo, view));
-  ctx.globalAlpha = prev;
-}
-
-function drawMenuChrome(w, h) {
-  const veil = Math.round(h * 0.62);
-  ctx.globalAlpha = 0.85;
-  ctx.fillStyle = PALETTE.bg;
-  ctx.fillRect(0, 0, w, veil);
-  ctx.globalAlpha = 1;
-
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  const big = Math.max(22, Math.round(Math.min(w / 14, h / 9)));
-
-  if (menu.screen === 'help') {
-    ctx.fillStyle = PALETTE.accent;
-    ctx.font = `700 ${big}px ${MONO}`;
-    ctx.fillText('HOW TO PLAY', w / 2, Math.round(h * 0.06));
-    const lh = Math.max(18, Math.round(h * 0.042));
-    const size = Math.max(11, Math.round(lh * 0.55));
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `400 ${size}px ${MONO}`;
-    const y0 = Math.round(h * 0.06) + big + Math.round(lh * 0.8);
-    for (let i = 0; i < HELP_LINES.length; i++) {
-      ctx.fillText(HELP_LINES[i], w / 2, y0 + i * lh);
-    }
-    ctx.fillStyle = PALETTE.dim;
-    ctx.fillText('Enter or Escape: back', w / 2, veil - Math.round(lh * 1.4));
-    return;
-  }
-
-  ctx.fillStyle = PALETTE.accent;
-  ctx.font = `700 ${big}px ${MONO}`;
-  ctx.fillText('QUORUM RUN', w / 2, Math.round(h * 0.06));
-  ctx.fillStyle = PALETTE.dim;
-  ctx.font = `400 ${Math.max(10, Math.round(big * 0.34))}px ${MONO}`;
-  ctx.fillText('patch courier, the merge arcade', w / 2, Math.round(h * 0.06) + big + 8);
-
-  const items = menuItems(menu);
-  const lh = Math.max(22, Math.round(h * 0.05));
-  const size = Math.max(12, Math.round(lh * 0.55));
-  const y0 = Math.round(h * 0.06) + big + 34;
-  for (let i = 0; i < items.length; i++) {
-    const sel = i === menu.selected;
-    ctx.fillStyle = sel ? PALETTE.accent : PALETTE.text;
-    ctx.font = `${sel ? '700' : '400'} ${size}px ${MONO}`;
-    ctx.fillText((sel ? '\u203a ' : '\u2003') + items[i], w / 2, y0 + i * lh);
-  }
-
-  const small = Math.max(10, Math.round(size * 0.8));
-  ctx.fillStyle = PALETTE.dim;
-  ctx.font = `400 ${small}px ${MONO}`;
-  const foot = scores.length > 0 ? `BEST ${formatScore(scores[0].score)}` : 'BEST 000000';
-  ctx.fillText(`${foot} \u00b7 arrows/WASD choose \u00b7 Enter play \u00b7 P pause`, w / 2, veil - small * 1.2);
-}
-
-function drawGameOver(w, h) {
-  ctx.globalAlpha = 0.55;
-  ctx.fillStyle = PALETTE.bg;
-  ctx.fillRect(0, 0, w, h);
-  ctx.globalAlpha = 1;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const big = Math.max(20, Math.round(Math.min(w / 16, h / 14)));
-  ctx.fillStyle = st && st.status === 'won' ? PALETTE.accent : PALETTE.danger;
-  ctx.font = `700 ${Math.round(big * 1.6)}px ${MONO}`;
-  ctx.fillText('ALL MERGED', w / 2, h / 2 - big * 1.4);
-  if (!st || st.status !== 'won') {
-    ctx.fillStyle = PALETTE.accent;
-    ctx.fillText('GAME OVER', w / 2, h / 2 - big * 0.2);
-  }
-  ctx.fillStyle = PALETTE.text;
-  ctx.font = `700 ${big}px ${MONO}`;
-  ctx.fillText(`SCORE ${formatScore(st ? st.score : 0)}`, w / 2, h / 2 + big * 1.2);
-  ctx.fillStyle = PALETTE.dim;
-  ctx.font = `400 ${Math.max(10, Math.round(big * 0.6))}px ${MONO}`;
-  ctx.fillText('Enter: menu', w / 2, h / 2 + big * 2.4);
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-}
-
-function drawEditor(w, h) {
-  ctx.fillStyle = PALETTE.bg;
-  ctx.fillRect(0, 0, w, h);
-  const def = editorDef;
-  const bottom = 64;
-  const cell = Math.max(4, Math.floor(Math.min(w / def.width, (h - bottom - 56) / def.height)));
-  const ox = Math.floor((w - cell * def.width) / 2);
-  const oy = 56 + Math.floor((h - bottom - 56 - cell * def.height) / 2);
-  editorMetrics = { cell, ox, oy };
-
-  ctx.fillStyle = PALETTE.panel;
-  ctx.fillRect(0, 0, w, 52);
-  ctx.fillStyle = PALETTE.accent;
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  ctx.font = `700 ${Math.max(12, Math.round(h * 0.03))}px ${MONO}`;
-  ctx.fillText('LEVEL EDITOR', 12, 26);
-  ctx.fillStyle = PALETTE.text;
-  ctx.font = `400 ${Math.max(9, Math.round(h * 0.022))}px ${MONO}`;
-  ctx.fillText('drag: paint \u00b7 shift+drag: flood \u00b7 Enter: play \u00b7 Escape: back', ox < 230 ? 12 : 150, 26);
-
-  const errs = editorErrors(def);
-  ctx.fillStyle = errs.length > 0 ? PALETTE.danger : PALETTE.dim;
-  ctx.textAlign = 'right';
-  if (errs.length > 0) ctx.fillText(errs.slice(0, 3).join(' '), w - 12, 26);
-
-  const s = Math.max(2, cell - Math.max(2, Math.floor(cell * 0.16)));
-  for (let y = 0; y < def.height; y++) {
-    const row = def.map[y] || '';
-    for (let x = 0; x < def.width; x++) {
-      const ch = row[x] || '.';
-      ctx.fillStyle = CELL_FILL[ch] || PALETTE.floor;
-      ctx.fillRect(ox + x * cell + Math.floor((cell - s) / 2), oy + y * cell + Math.floor((cell - s) / 2), s, s);
-      if (ch === 'X' || ch === '@' || ch === 'M') {
-        ctx.fillStyle = PALETTE.bg;
-        ctx.font = `700 ${Math.max(6, Math.floor(s * 0.55))}px ${MONO}`;
-        ctx.textAlign = 'center';
-        ctx.fillText(ch === 'X' ? 'X' : ch, ox + x * cell + Math.floor(cell / 2), oy + y * cell + Math.floor(cell / 2));
+function editorOps() {
+  const { width, height } = view;
+  const ops = [];
+  ops.push(uiText(editor.name + '  quorum ' + editor.quorum + '  par ' + editor.par, 8, HUD_HEIGHT + 12, PALETTE.text, 13));
+  const errs = editorErrors(editor);
+  ops.push(uiText(errs.length ? 'errors: ' + errs.join(', ') : 'map ok', 8, HUD_HEIGHT + 28, errs.length ? PALETTE.danger : PALETTE.dim, 13));
+  const frame = editorFrame();
+  const lo = layout(frame, view);
+  if (lo && lo.cell > 2) {
+    const { cell, ox, oy } = lo;
+    ops.push(uiRect(ox - 2, oy - 2, frame.width * cell + 4, frame.height * cell + 4, PALETTE.panel));
+    for (let y = 0; y < frame.height; y++) {
+      const row = editor.map[y] || '';
+      for (let x = 0; x < row.length; x++) {
+        const ch = row[x];
+        const px = ox + x * cell;
+        const py = oy + y * cell;
+        const midX = px + cell * 0.2;
+        const midY = py + cell * 0.75;
+        if (ch === '#') ops.push(uiRect(px, py, cell, cell, PALETTE.wall));
+        else if (ch === '@') ops.push({ op: 'circle', kind: 'ui', x: px + cell / 2, y: py + cell / 2, r: Math.max(2, cell * 0.3), color: PALETTE.accent });
+        else if (ch === 'P') ops.push({ op: 'circle', kind: 'ui', x: px + cell / 2, y: py + cell / 2, r: Math.max(2, cell * 0.25), color: PALETTE.agents[0] });
+        else if (ch === 'M') ops.push(uiText('M', midX, midY, PALETTE.accent, Math.max(10, Math.floor(cell * 0.6))));
+        else if (ch === 'X') ops.push(uiText('X', midX, midY, PALETTE.agents[3], Math.max(10, Math.floor(cell * 0.6))));
+        else if (ch === 'H') ops.push(uiText('H', midX, midY, PALETTE.dim, Math.max(10, Math.floor(cell * 0.6))));
+        else if (ch === '^' || ch === '>' || ch === 'v' || ch === '<') {
+          ops.push(uiText(ch, midX, midY, PALETTE.danger, Math.max(10, Math.floor(cell * 0.6))));
+        }
       }
     }
   }
-
-  // The tool palette row.
-  const sw = Math.min(Math.floor((w - 24) / TOOL_CHARS.length), 34);
-  editorPalette = { x0: Math.floor((w - sw * TOOL_CHARS.length) / 2), sw, y0: h - bottom + 16 };
-  ctx.textAlign = 'center';
-  ctx.font = `700 ${Math.max(10, Math.floor(sw * 0.5))}px ${MONO}`;
-  for (let i = 0; i < TOOL_CHARS.length; i++) {
-    const x0 = editorPalette.x0 + i * sw;
-    const ch = TOOL_CHARS[i];
-    if (ch === editorTool) {
-      ctx.fillStyle = PALETTE.accent;
-      ctx.fillRect(x0 + 1, h - bottom + 2, sw - 2, sw - 2);
-    }
-    ctx.fillStyle = ch === editorTool ? PALETTE.bg : (CELL_FILL[ch] || PALETTE.text);
-    ctx.fillText(ch === '.' ? '\u00b7' : ch, x0 + Math.floor(sw / 2), h - bottom + 2 + sw / 2);
+  const legendBase = Math.max(120, width - BRUSHES.length * 24 - 10);
+  BRUSHES.forEach((ch, i) => {
+    const sel = i === brush;
+    ops.push(uiText(sel ? '[' + ch + ']' : ' ' + ch, legendBase + i * 24, HUD_HEIGHT + 12, sel ? PALETTE.accent : PALETTE.dim, 13));
+  });
+  ops.push(uiText('click or drag paints (shift flood-fills), keys 1-9 0 pick a brush, f fill, [ ] width, - + height, e json, n name, q quorum, enter play, esc back', 8, height - 44, PALETTE.dim, 12));
+  if (flash && flash.until > performance.now()) {
+    ops.push(uiText(flash.text, 8, height - 24, PALETTE.accent, 13));
   }
-  ctx.fillStyle = PALETTE.dim;
-  ctx.textAlign = 'center';
-  ctx.font = `400 ${Math.max(9, Math.floor(sw * 0.4))}px ${MONO}`;
-  ctx.fillText('pick a character below, then paint the grid', w / 2, h - 12);
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
+  return ops;
 }
 
-// --- helpers -------------------------------------------------------------
-
-function fit(c) {
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = c.clientWidth || window.innerWidth;
-  const cssH = c.clientHeight || window.innerHeight;
-  c.width = Math.max(1, Math.floor(cssW * dpr));
-  c.height = Math.max(1, Math.floor(cssH * dpr));
-  return { width: c.width, height: c.height };
-}
-
-// Settings and scores live in localStorage; file:// or private modes may
-// refuse it, so every access is guarded.
-function readStore(key) {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function store(key, value) {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    /* storage unavailable; the run just isn't remembered */
-  }
-}
-
-function randomSeed() {
-  return (Math.random() * 0x100000000) >>> 0;
-}
-
-function todayString() {
-  const d = new Date();
-  const two = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
-}
+requestAnimationFrame(render);
