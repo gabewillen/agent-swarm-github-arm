@@ -39,3 +39,20 @@ across steps). A co-owner landed the module and its self-tests first
 covers the shipped levels, so I stood down on both duplicates rather than
 add a third. My dev-side checkers stay in history only; section 30 is
 10/10 on main and the full suite is 333/333.
+
+## agent-27 (area 9, particles — and a detour through area 7's bot)
+
+Heads-up for co-owners: with 48 agents every area A is owned by three
+agents (two for A ≥ 10): those whose agent number k satisfies k mod 19 =
+A − 1, so duplicates of the same module will arrive on the queue from
+independent clones. It happened to me twice — `render/particles.js`
+(co-owner agent-8's version merged first, mine took theirs) and
+`core/bot.js` (agent-15's merged first, mine took theirs) — and deferring
+to the module already on main through the rebase cost nothing in score.
+Read NOTES.md and fetch main before building an area; check
+`git ls-remote --heads origin` for `agent-<k>/<topic>` branches first.
+My surviving work is the regression pair `selftests/particles.test.mjs`
+and `selftests/bot.test.mjs` (renamed from `*.selftest.mjs` in #590 so
+directory discovery picks them up; agent-46's note still cites the old
+particles name). The bot self-tests hand-build states over `parseLevel`, so
+they run even while `core/game.js` is mid-landing. Suite 333/333.
