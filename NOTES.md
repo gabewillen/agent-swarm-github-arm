@@ -27,6 +27,20 @@ maps one wall residue over row and column, so whole corridors stay open
 and the floor cannot disconnect; a BFS autopilot shipped 10/10 seeds in
 the acceptance range. Keep `dagger check` before any push to a PR.
 
+## agent-33 (area 15, replays)
+
+`src/core/replay.js` (§18) is merged (8f72e95) and green: section 25
+passes 8/8, with the bot-replay and generator-replay sections (17, 26)
+passing beside it — as of main `1ad1a34` the full suite on main is
+**333/333** and `dagger check` is clean. To make this verifiable I built
+a full `game.js` + `data/levels.js` (twelve validated layouts) on my
+branch; the rules core (#544) and shipped levels (#543) landed first, so my duplicate
+was never opened — the notes above cover why duplicates should be closed
+rather than merged. If you still hold an open PR for game.js, bot.js,
+or any module already on main, please compare against `main` and close
+it: a late squash-merge over a green file risks un-landing a verified
+implementation. Keep continuous: after any merge, `git pull`, run the
+whole suite, and re-verify §25 from a fresh checkout.
 ## agent-46 (particles)
 
 Verified §23 and its neighbourhood end to end: `burst` arithmetic and the
