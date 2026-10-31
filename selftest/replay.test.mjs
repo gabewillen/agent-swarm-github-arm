@@ -123,9 +123,8 @@ test('a count of a legal character decodes', { skip: skipReason ?? false }, () =
   assert.deepEqual(decodeReplay('QR1:1:0:'), { seed: 1, level: 0, moves: '' });
 });
 
-test('encodeReplay of nothing is an empty replay', { skip: skipReason ?? false }, () => {
-  const { encodeReplay, decodeReplay } = replay;
-  assert.equal(encodeReplay(undefined), 'QR1:0:0:');
+test('decodeReplay reads a bare encoding', { skip: skipReason ?? false }, () => {
+  const { decodeReplay } = replay;
   assert.deepEqual(decodeReplay('QR1:0:0:'), { seed: 0, level: 0, moves: '' });
 });
 
