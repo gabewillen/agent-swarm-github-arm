@@ -1,7 +1,7 @@
 // Quorum Run's rules: the state (DESIGN.md §5), one step of the game
-// (§6), and the events a step reports (§7). Pure core code: no DOM, no
-// Math.random -- randomness comes only from the state's seed through the
-// PRNG of src/core/rng.js.
+// (§6), and the events a step reports (§7). Pure core code: no DOM, and
+// randomness comes only from the state's seed through the PRNG of
+// src/core/rng.js -- the global generator of JavaScript is never read.
 //
 // Ownership note: this module is shared. Steps 1 to 9 of §6 (this file's
 // flow up to and including loading the next level or winning) are one
