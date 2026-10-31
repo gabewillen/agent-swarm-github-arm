@@ -1,5 +1,5 @@
 // §19 — generated levels and the daily run. Pure data in, plain data out:
-// no DOM, no clock, no Math.random, nothing Node-only. Every random choice
+// no DOM, no clock, no unseeded random, nothing Node-only. Every random choice
 // comes from the PRNG of §3 started at `seed >>> 0`, so the same seed and
 // options build the same level, and most seeds build a different one.
 
