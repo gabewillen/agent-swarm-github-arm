@@ -1,257 +1,330 @@
-// Quorum Run autopilot (DESIGN.md §9): botInput(state) returns the input
-// for a state, pure and deterministic.
+// An autopilot that plays Quorum Run (DESIGN.md §9).
 //
-// The plan: head for the open exit; otherwise for a merge pad with full
-// hands; otherwise for the nearest lying patch that can be reached (with
-// a fallback to the pad so carried patches bank); otherwise loiter at the
-// pad. The first step comes from a breadth-first search over the level's
-// passable cells, with the drifts' cells blocked when the route doesn't
-// have to cross them.
+// botInput(state) returns { move, pause: false } and is pure: it changes
+// nothing, draws no randomness, and gives the same input for the same
+// state. Each step is planned from scratch:
 //
-// The dodge: the game is deterministic, so the bot simulates the upcoming
-// step's drift movement exactly (§6 step 10 to 12) and avoids every move
-// that would end the step with a drift on it, or that would swap cells
-// with a moving drift. Cells next to drifts carry a small penalty so
-// routes with cover win. With invuln ticks left nothing can hit, so the
-// bot spends that window making progress instead of dodging.
+//   1. predict exactly where every drift stands after this step, conflicts
+//      aged first, per §6 steps 5, 10 and 11;
+//   2. pick a target: the exit once the level is open, a merge pad when
+//      the hands are full, a patch while room is left, a merge pad when
+//      carrying, else a cell beside a spawn point to wait for the next
+//      patch;
+//   3. walk a breadth-first path to it that avoids conflicts, drifts, and
+//      cells a drift will reach this step; when drifts wall off every
+//      route the blocking relaxes one level at a time;
+//   4. check the chosen move against the exact hit rules of §6 step 12 —
+//      never land where a drift lands, never swap cells with one, never
+//      step onto one that stays;
+//   5. holding still is allowed only while no drift lands on the player's
+//      cell within a few steps; otherwise the bot steps aside, preferring
+//      cells no drift is headed for.
 
-import { CARRY_MAX, CLOCKWISE, DIRS } from './constants.js';
+import { DIRS, CLOCKWISE, CARRY_MAX } from './constants.js';
 
-const NONE = { move: null, pause: false };
-const STEPS = Object.keys(DIRS); // up, right, down, left — a fixed tie-break order
+// The four moves, clockwise from up (§2), which is also the tie-break
+// order for paths and for fallbacks.
+const DIR_VECTORS = CLOCKWISE.map((name) => DIRS[name]);
+const REVERSE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
+// The terrain at a cell, '#' past the edges of the map (§5 tileAt).
+function tileOf(level, x, y) {
+  const row = level.tiles[y];
+  if (row === undefined || x < 0 || x >= row.length) return '#';
+  return row[x];
+}
+
+// A drift may stand on any terrain but a wall, a hold, or the exit (§6
+// step 10), open or not.
+function passableForDrift(t) {
+  return t !== '#' && t !== 'H' && t !== 'X';
+}
+
+// A cell the player may stand on: never a wall; holds and the exit only
+// while the level is open (§6 step 6).
+function passableForPlayer(t, open) {
+  if (t === '#') return false;
+  if (!open && (t === 'H' || t === 'X')) return false;
+  return true;
+}
+
+function keyOf(width, x, y) {
+  return y * width + x;
+}
+
+// Conflicts on the board during the next step: each ages by one first (§6
+// step 5), and one that reaches 0 is gone. `age` is how many stages to age
+// past the state's value: 1 for the next step, 2 for the step after.
+function conflictAged(conflicts, width, age) {
+  const set = new Set();
+  for (const c of conflicts ?? []) {
+    if (c.ttl > age) set.add(keyOf(width, c.x, c.y));
+  }
+  return set;
+}
+
+// One drift phase over `drifts`, per §6 step 10 (turn order against walls,
+// holds, the exit, and conflicts) and step 11 (collisions). Returns the
+// drifts' resulting { x, y, dir } in drift order and, on move ticks, the
+// cells where two or more drifts collided — a conflict forms on each.
+function simDriftStep(level, drifts, conflicts, willMove) {
+  const width = level.width;
+  const land = [];
+  for (const d of drifts) {
+    if (!willMove) {
+      land.push({ x: d.x, y: d.y, dir: d.dir });
+      continue;
+    }
+    const from = Math.max(0, CLOCKWISE.indexOf(d.dir));
+    let placed = false;
+    for (let k = 0; k < 4 && !placed; k++) {
+      const m = (from + k) % 4;
+      const [dx, dy] = DIR_VECTORS[m];
+      const x = d.x + dx;
+      const y = d.y + dy;
+      if (passableForDrift(tileOf(level, x, y)) && !conflicts.has(keyOf(width, x, y))) {
+        land.push({ x, y, dir: CLOCKWISE[m] });
+        placed = true;
+      }
+    }
+    if (!placed) land.push({ x: d.x, y: d.y, dir: d.dir });
+  }
+  const collisions = [];
+  if (willMove && land.length > 1) {
+    const stacks = new Map();
+    for (let i = 0; i < land.length; i++) {
+      const k = keyOf(width, land[i].x, land[i].y);
+      if (!stacks.has(k)) stacks.set(k, []);
+      stacks.get(k).push(i);
+    }
+    for (const k of [...stacks.keys()].sort((a, b) => a - b)) {
+      if (stacks.get(k).length < 2) continue;
+      for (const i of stacks.get(k)) land[i].dir = REVERSE[land[i].dir] ?? land[i].dir;
+      collisions.push(k);
+    }
+  }
+  return { land, collisions };
+}
+
+// Breadth-first search over the cells the player may stand on. `blocked`
+// is a set of cell keys treated as impassable. Returns dist/fn arrays
+// where dist ≥ 0 marks a reached cell and fn its first step (0 to 3, a
+// CLOCKWISE move index); the start cell is always reached at distance 0.
+function bfsFrom(level, open, blocked, px, py) {
+  const width = level.width;
+  const height = level.height;
+  const dist = new Int16Array(width * height).fill(-1);
+  const fn = new Int8Array(width * height).fill(-1);
+  const start = keyOf(width, px, py);
+  dist[start] = 0;
+  const queue = [start];
+  for (let head = 0; head < queue.length; head++) {
+    const key = queue[head];
+    const x = key % width;
+    const y = (key - x) / width;
+    for (let m = 0; m < 4; m++) {
+      const nx = x + DIR_VECTORS[m][0];
+      const ny = y + DIR_VECTORS[m][1];
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const nk = keyOf(width, nx, ny);
+      if (dist[nk] !== -1) continue;
+      if (!passableForPlayer(tileOf(level, nx, ny), open)) continue;
+      if (blocked.has(nk)) continue;
+      dist[nk] = dist[key] + 1;
+      fn[nk] = key === start ? m : fn[key];
+      queue.push(nk);
+    }
+  }
+  return { dist, fn };
+}
+
+// The best reachable cell of a candidate list: the closest, ties in list
+// order (build the lists in reading order). Null when none is reached.
+function pickCell(reached, cells) {
+  let best = null;
+  for (const cell of cells) {
+    if (reached.dist[cell] < 0) continue;
+    if (best === null || reached.dist[cell] < reached.dist[best]) best = cell;
+  }
+  return best === null ? null : { cell: best, dist: reached.dist[best] };
+}
+
+// Which sort of progress cell to walk to, in the order of §9: the exit
+// first when it is open, a merge pad when the hands are full, a patch
+// while room remains, a merge pad when carrying. Waiting spots beside
+// spawn points are settled separately, after every relaxation has been
+// tried for progress.
+function chooseCargo(reached, exits, merges, patches, open, carried) {
+  if (open) {
+    const exit = pickCell(reached, exits);
+    if (exit !== null) return exit;
+  }
+  if (carried >= CARRY_MAX) {
+    return pickCell(reached, merges);
+  }
+  if (carried < CARRY_MAX) {
+    const patch = pickCell(reached, patches);
+    if (patch !== null) return patch;
+  }
+  if (carried > 0) {
+    const merge = pickCell(reached, merges);
+    if (merge !== null) return merge;
+  }
+  return null;
+}
 
 export function botInput(state) {
-  if (!state || !state.level || !state.player) return NONE;
-  if (state.status !== 'playing' || state.paused) return NONE;
-
+  if (!state || state.status !== 'playing' || state.paused) return { move: null, pause: false };
   const level = state.level;
-  const W = level.width;
-  const H = level.height;
-  const tiles = level.tiles;
+  if (!level || !state.player) return { move: null, pause: false };
+  const width = level.width;
+  const height = level.height;
   const open = !!state.open;
-  const drifts = state.drifts || [];
-  const conflicts = state.conflicts || [];
-  const patches = state.patches || [];
-  const hands = state.carried ? state.carried.length : 0;
   const px = state.player.x;
   const py = state.player.y;
-  const playerK = py * W + px;
+  const carried = state.carried ? state.carried.length : 0;
+  const period = level.driftPeriod || 1;
 
-  const key = (x, y) => y * W + x;
-  const tile = (x, y) => {
-    if (y < 0 || y >= H || x < 0 || x >= W) return '#';
-    return tiles[y][x];
+  // Conflicts block from the moment they age in (§6 steps 5, 6, 10).
+  const conflicts = conflictAged(state.conflicts, width, 1);
+
+  // Where the drifts stand after this step (§6 step 10), cells a drift
+  // will swap across, and whether a drift will land on the player's cell
+  // within a few steps. Waiting beside a spawn point is safe only until a
+  // patrol turns: a cell a drift will reach is no camp site.
+  const stepA = simDriftStep(level, state.drifts ?? [], conflicts, (state.tick + 1) % period === 0);
+  const dests = stepA.land;
+  const destOcc = new Set(dests.map((d) => keyOf(width, d.x, d.y)));
+  const nowOcc = new Set((state.drifts ?? []).map((d) => keyOf(width, d.x, d.y)));
+  // A drift that will swap cells with the player this step: it now stands
+  // on the cell the player would enter while it is headed for the player's
+  // own cell (§6 step 12), so entering its cell is a hit.
+  const swap = new Set();
+  for (let i = 0; i < dests.length; i++) {
+    const d = (state.drifts ?? [])[i];
+    if (d && dests[i].x === px && dests[i].y === py) swap.add(keyOf(width, d.x, d.y));
+  }
+  // A few drift phases of preview: `attacked` gathers every cell a drift
+  // lands on, whether it reaches the player's own cell is `unsafeToHold`.
+  const attacked = new Set();
+  let unsafeToHold = false;
+  let drifts = dests;
+  let conflictKeys = new Set([
+    ...conflictAged(state.conflicts, width, 2),
+    ...stepA.collisions,
+  ]);
+  for (let ahead = 2; ahead <= 4 && !unsafeToHold; ahead++) {
+    const nxt = simDriftStep(level, drifts, conflictKeys, (state.tick + ahead) % period === 0);
+    for (const d of nxt.land) {
+      const k = keyOf(width, d.x, d.y);
+      attacked.add(k);
+      if (d.x === px && d.y === py) unsafeToHold = true;
+    }
+    drifts = nxt.land;
+    conflictKeys = new Set([...conflictKeys, ...nxt.collisions]);
+  }
+
+  // Holding still is a hit when a drift lands on (or stays on) the
+  // player's cell; a drift standing there that moves away is no hit.
+  const staySafe = !destOcc.has(keyOf(width, px, py));
+  const holdSafe = staySafe && !unsafeToHold;
+  const steppingSafe = (x, y) => {
+    const nk = keyOf(width, x, y);
+    if (destOcc.has(nk) || swap.has(nk)) return false;
+    if (!passableForPlayer(tileOf(level, x, y), open)) return false;
+    if (conflicts.has(nk)) return false;
+    return true;
   };
 
-  // Where nobody stands this step: walls, closed doors and exit, and
-  // conflict cells. The drifts' cells block the cautious search too.
-  const staticBlocked = new Set();
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const t = tiles[y][x];
-      if (t === '#' || (!open && (t === 'H' || t === 'X'))) staticBlocked.add(key(x, y));
+  // Cells worth walking to: exits, merge pads, patches, and the cells
+  // beside spawn points worth standing near. Lists in reading order.
+  const exits = [];
+  const merges = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const t = tileOf(level, x, y);
+      if (t === 'M') merges.push(keyOf(width, x, y));
+      else if (t === 'X') exits.push(keyOf(width, x, y));
     }
   }
-  for (const c of conflicts) staticBlocked.add(key(c.x, c.y));
-  const driftBlocked = new Set(staticBlocked);
-  const driftNow = new Set();
-  for (const d of drifts) {
-    driftBlocked.add(key(d.x, d.y));
-    driftNow.add(key(d.x, d.y));
+  const patches = (state.patches ?? []).map((p) => keyOf(width, p.x, p.y)).sort((a, b) => a - b);
+  const spawnKeys = new Set((level.spawns ?? []).map((s) => keyOf(width, s.x, s.y)));
+  const anchors = [];
+  for (const s of level.spawns ?? []) {
+    for (let m = 0; m < 4; m++) {
+      const x = s.x + DIR_VECTORS[m][0];
+      const y = s.y + DIR_VECTORS[m][1];
+      if (x < 0 || y < 0 || x >= width || y >= height) continue;
+      const k = keyOf(width, x, y);
+      if (spawnKeys.has(k)) continue;
+      if (!passableForPlayer(tileOf(level, x, y), open)) continue;
+      anchors.push(k);
+    }
   }
+  const anchorList = [...new Set(anchors)].sort((a, b) => a - b);
 
-  // The upcoming step's drift movement, exactly as §6 step 10 plays it:
-  // only when the new tick allows it, against the conflicts after step
-  // 5's ageing (a conflict at ttl 1 is gone before anyone moves).
-  const tick = (state.tick | 0) + 1;
-  const driftPeriod = level.driftPeriod || 1;
-  const willMove = tick % driftPeriod === 0;
-  const risky = (state.invuln | 0) === 0;
-  const aged = new Set();
-  for (const c of conflicts) if (c.ttl > 1) aged.add(key(c.x, c.y));
-  const moved = []; // { from, to }
-  let driftNext = driftNow;
-  if (willMove) {
-    driftNext = new Set();
-    for (const d of drifts) {
-      const at = CLOCKWISE.indexOf(d.dir);
-      let land = null;
-      for (let k = 0; k < 4 && !land; k++) {
-        const dir = CLOCKWISE[(at + k) % 4];
-        const step = DIRS[dir];
-        const x = d.x + step[0];
-        const y = d.y + step[1];
-        const t = tile(x, y);
-        if (t === '#' || t === 'H' || t === 'X') continue;
-        if (aged.has(key(x, y))) continue;
-        land = { x, y, dir };
+  // The plan: cross every relaxation level looking for progress cells —
+  // the exit, patches, merge pads — before settling to wait, since a
+  // drifting patrol can shade a pad for whole sweeps though a trailing
+  // walk still crosses it. A relaxed opening is checked against the exact
+  // hit rules and routed around when it is doomed.
+  const full = new Set([...conflicts, ...nowOcc, ...destOcc]);
+  const mid = new Set([...conflicts, ...nowOcc]);
+  for (const blocked of [full, mid, conflicts]) {
+    const aug = new Set(blocked);
+    for (let pass = 0; pass < 8; pass++) {
+      const reached = bfsFrom(level, open, aug, px, py);
+      const target = chooseCargo(reached, exits, merges, patches, open, carried);
+      if (target === null) break;
+      if (target.dist === 0) {
+        // Standing on the target is fine while nothing is coming for it:
+        // pickups, merges, and exits fire on standing there (§6 steps 7-9).
+        if (holdSafe) return { move: null, pause: false };
+        break;
       }
-      if (!land) land = { x: d.x, y: d.y, dir: d.dir };
-      moved.push({ from: key(d.x, d.y), to: key(land.x, land.y) });
-      driftNext.add(key(land.x, land.y));
+      const m = reached.fn[target.cell];
+      const nx = px + DIR_VECTORS[m][0];
+      const ny = py + DIR_VECTORS[m][1];
+      if (steppingSafe(nx, ny)) return { move: CLOCKWISE[m], pause: false };
+      aug.add(keyOf(width, nx, ny));
     }
   }
-
-  // Breadth-first distance from one cell to every cell it can reach.
-  const bfs = (sourceK, blocked) => {
-    const dist = new Int16Array(W * H).fill(-1);
-    if (blocked.has(sourceK)) return dist;
-    dist[sourceK] = 0;
-    const queue = [sourceK];
-    for (let qi = 0; qi < queue.length; qi++) {
-      const k = queue[qi];
-      const x = k % W;
-      const y = (k - x) / W;
-      const d = dist[k];
-      for (const dir of STEPS) {
-        const step = DIRS[dir];
-        const nx = x + step[0];
-        const ny = y + step[1];
-        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-        const nk = key(nx, ny);
-        if (dist[nk] !== -1 || blocked.has(nk)) continue;
-        dist[nk] = d + 1;
-        queue.push(nk);
+  // No progress cell anywhere: wait beside a patch spawn, again in
+  // relaxation order (a drifting patrol may need the roomier routes).
+  for (const blocked of [full, conflicts]) {
+    const aug = new Set(blocked);
+    for (let pass = 0; pass < 8; pass++) {
+      const reached = bfsFrom(level, open, aug, px, py);
+      const target = pickCell(reached, anchorList);
+      if (target === null) break;
+      if (target.dist === 0) {
+        if (holdSafe) return { move: null, pause: false };
+        break;
       }
-    }
-    return dist;
-  };
-
-  // A cell's path length from the player, drift-avoiding paths first.
-  const toPlayerA = bfs(playerK, driftBlocked);
-  const toPlayerB = bfs(playerK, staticBlocked);
-  const reach = (k) => {
-    const a = toPlayerA[k];
-    if (a >= 0) return a;
-    return toPlayerB[k];
-  };
-
-  // The goal: the exit once the quorum is open, the merge pad with full
-  // hands, the nearest patch otherwise; with no patch to fetch, the pad
-  // banks what is carried or waits for a spawn.
-  const scan = (ch) => {
-    const found = [];
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) if (tiles[y][x] === ch) found.push(key(x, y));
-    }
-    return found;
-  };
-  const exits = scan('X');
-  const pads = scan('M');
-  const nearest = (cells) => {
-    let best = null;
-    let bestDist = Infinity;
-    for (let i = 0; i < cells.length; i++) {
-      const d = reach(cells[i]);
-      if (d >= 0 && d < bestDist) {
-        best = cells[i];
-        bestDist = d;
-      }
-    }
-    return best;
-  };
-  let targetK = null;
-  if (open && exits.length > 0) {
-    targetK = exits[0]; // exactly one exit per level
-  } else if (hands >= CARRY_MAX) {
-    targetK = nearest(pads);
-  } else {
-    let patchK = null;
-    let patchDist = Infinity;
-    for (let i = 0; i < patches.length; i++) {
-      const d = reach(key(patches[i].x, patches[i].y));
-      if (d >= 0 && d < patchDist) {
-        patchK = key(patches[i].x, patches[i].y);
-        patchDist = d;
-      }
-    }
-    targetK = patchK !== null ? patchK : nearest(pads);
-  }
-  if (targetK === null) {
-    // Nothing is reachable: stand ground and let the level change.
-    return NONE;
-  }
-
-  // Breadth-first distance from the goal, drift-avoiding paths first.
-  const toTargetA = bfs(targetK, driftBlocked);
-  const toTargetB = bfs(targetK, staticBlocked);
-  const dist = (k) => {
-    const a = toTargetA[k];
-    if (a >= 0) return a;
-    return toTargetB[k];
-  };
-
-  // The candidates: one per direction, then standing still last so a
-  // move wins cost ties. A step the game would refuse (wall, closed
-  // door, conflict) behaves like standing still, so it is folded into the
-  // stay candidate.
-  const candidates = [];
-  for (const dir of STEPS) {
-    const step = DIRS[dir];
-    const nx = px + step[0];
-    const ny = py + step[1];
-    const t = tile(nx, ny);
-    if (t === '#' || (!open && (t === 'H' || t === 'X'))) continue;
-    if (staticBlocked.has(key(nx, ny))) continue;
-    candidates.push({ move: dir, k: key(nx, ny) });
-  }
-  candidates.push({ move: null, k: playerK });
-
-  // A cell that ends the step under a drift is deadly while the bot can
-  // be hit; so is swapping with a moving drift (the bot steps onto the
-  // drift's cell as the drift steps onto the bot's old one). Without a
-  // route to the goal the bot hovers on the near side of the blockage
-  // instead of chasing the goal into danger. Cells next to drifts cost a
-  // little, next to where they land next tick a little more.
-  const adjacent = (cells, k) => {
-    const x = k % W;
-    const y = (k - x) / W;
-    let n = 0;
-    for (const c of cells) {
-      const cx = c % W;
-      const cy = (c - cx) / W;
-      if (Math.abs(cx - x) + Math.abs(cy - y) === 1) n++;
-    }
-    return n;
-  };
-  let best = null;
-  let bestCost = Infinity;
-  for (let i = 0; i < candidates.length; i++) {
-    const cand = candidates[i];
-    const k = cand.k;
-    const eps = i * 0.01;
-    let cost;
-    if (risky) {
-      let deadly = driftNext.has(k);
-      if (!deadly) {
-        for (const m of moved) {
-          if (m.from !== m.to && m.to === playerK && m.from === k) {
-            deadly = true;
-            break;
-          }
-        }
-      }
-      if (deadly) {
-        cost = 5000 + adjacent(driftNow, k) + eps;
-      } else {
-        const soft = 0.6 * adjacent(driftNow, k)
-          + (willMove ? 1.2 * adjacent(driftNext, k) : 0);
-        const d = dist(k);
-        cost = d >= 0 ? d + soft + eps : 3000 + soft + eps;
-      }
-    } else {
-      // Nothing can hit while invuln ticks remain: walk the route.
-      const d = dist(k);
-      cost = d >= 0 ? d + eps : 3000 + eps;
-    }
-    if (cost < bestCost) {
-      best = cand;
-      bestCost = cost;
+      const m = reached.fn[target.cell];
+      const nx = px + DIR_VECTORS[m][0];
+      const ny = py + DIR_VECTORS[m][1];
+      if (steppingSafe(nx, ny)) return { move: CLOCKWISE[m], pause: false };
+      aug.add(keyOf(width, nx, ny));
     }
   }
-  if (!best || bestCost >= 5000) {
-    // No safe choice at all: stand ground rather than step onto a drift.
-    return NONE;
+
+  // Nothing to reach: hold while that is safe, else step aside —
+  // preferring safe cells no drift is headed for, then any safe cell, then
+  // any passable neighbour (ordered clockwise), else hold anyway.
+  if (holdSafe) return { move: null, pause: false };
+  const options = [];
+  for (let m = 0; m < 4; m++) {
+    const x = px + DIR_VECTORS[m][0];
+    const y = py + DIR_VECTORS[m][1];
+    if (!passableForPlayer(tileOf(level, x, y), open)) continue;
+    if (conflicts.has(keyOf(width, x, y))) continue;
+    options.push({ m, x, y });
   }
-  return { move: best.move, pause: false };
+  const safe = options.filter((o) => steppingSafe(o.x, o.y));
+  const calm = safe.filter((o) => !attacked.has(keyOf(width, o.x, o.y)));
+  if (calm.length > 0) return { move: CLOCKWISE[calm[0].m], pause: false };
+  if (safe.length > 0) return { move: CLOCKWISE[safe[0].m], pause: false };
+  if (options.length > 0) return { move: CLOCKWISE[options[0].m], pause: false };
+  return { move: null, pause: false };
 }
