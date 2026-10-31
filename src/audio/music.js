@@ -22,7 +22,7 @@ export function tempo(levelIndex) {
 }
 
 // FNV-1a over a few integers: pure, deterministic spread for pattern
-// choices. No Math.random anywhere — bar() must be a pure function.
+// choices: no clock reads, no raw random — bar() must be a pure function.
 function hashN(...nums) {
   let h = 0x811c9dc5;
   for (const n of nums) h = Math.imul(h ^ (n | 0), 0x01000193) >>> 0;
