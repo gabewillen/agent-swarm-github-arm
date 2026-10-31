@@ -1,290 +1,276 @@
-// DESIGN.md §5–§7: the rules. Pure: no DOM, no random but the state's seed,
-// and every step returns plain JSON data without touching what it is given.
+// The rules of Quorum Run (DESIGN.md §5 to §7). `init` builds the first
+// state, `step` plays one input, and `tileAt` reads the terrain. Both are
+// pure: they never change the state or input they are given, and every
+// state they return is plain JSON data.
 
 import {
-  CARRY_MAX,
-  START_LIVES,
-  INVULN_TICKS,
-  CONFLICT_TICKS,
-  PATCH_BASE,
-  SAME_COLOR_BONUS,
-  TIME_BONUS_PER_TICK,
-  COLORS,
-  DIRS,
-  CLOCKWISE,
+  CARRY_MAX, START_LIVES, INVULN_TICKS, CONFLICT_TICKS,
+  PATCH_BASE, SAME_COLOR_BONUS, TIME_BONUS_PER_TICK, COLORS, DIRS, CLOCKWISE,
 } from './constants.js';
 import { rngInt } from './rng.js';
 import { parseLevel } from './level.js';
 import { LEVELS } from '../data/levels.js';
 
-const REVERSE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
-function tileOf(level, x, y) {
-  if (y < 0 || y >= level.tiles.length) return '#';
-  const row = level.tiles[y];
-  if (x < 0 || x >= row.length) return '#';
-  return row[x];
-}
-
-function conflictOn(conflicts, x, y) {
-  return conflicts.some((c) => c.x === x && c.y === y);
-}
-
-// Passable to the player (§6 step 6).
-function playerPassable(level, open, conflicts, x, y) {
-  const t = tileOf(level, x, y);
-  if (t === '#') return false;
-  if ((t === 'H' || t === 'X') && !open) return false;
-  return !conflictOn(conflicts, x, y);
-}
-
-// Passable to a drift (§6 step 10): holds and the exit are always walls.
-function driftPassable(level, conflicts, x, y) {
-  const t = tileOf(level, x, y);
-  if (t === '#') return false;
-  if (t === 'H' || t === 'X') return false;
-  return !conflictOn(conflicts, x, y);
-}
-
-// One drift's move: its direction first, then clockwise; it turns to and
-// moves into the first passable target, else stays and keeps its direction.
-function driftMove(level, drift, conflicts) {
-  const from = CLOCKWISE.indexOf(drift.dir);
-  for (let i = 0; i < 4; i++) {
-    const dir = CLOCKWISE[(from + i) % 4];
-    const dx = DIRS[dir][0];
-    const dy = DIRS[dir][1];
-    const nx = drift.x + dx;
-    const ny = drift.y + dy;
-    if (driftPassable(level, conflicts, nx, ny)) return { x: nx, y: ny, dir };
+// Loading a level (§5, at init and on reaching an open exit): the parsed
+// level, the player at its start, one patch per spawn point in reading
+// order with fresh colour draws, copies of its drifts, and the per-level
+// fields reset. Score, lives, tick, and the PRNG state stay as they are.
+function loadLevel(def, seed, levelIndex) {
+  const level = parseLevel(def);
+  let s = seed >>> 0;
+  const patches = [];
+  for (const sp of level.spawns) {
+    const r = rngInt(s, COLORS);
+    patches.push({ x: sp.x, y: sp.y, color: r.value });
+    s = r.seed;
   }
-  return { x: drift.x, y: drift.y, dir: drift.dir };
-}
-
-// Loading a level (at init and on reaching an open exit): level, player,
-// patches (fresh colour draws in spawn order), and drifts are set; carried,
-// conflicts, merges, open, invuln, and levelTicks reset. score, lives, tick,
-// and the PRNG state are kept (§5).
-function loadLevelInto(state) {
-  state.level = parseLevel(state.levels[state.levelIndex]);
-  state.player = { x: state.level.start.x, y: state.level.start.y };
-  state.patches = state.level.spawns.map((spot) => {
-    const draw = rngInt(state.seed, COLORS);
-    state.seed = draw.seed;
-    return { x: spot.x, y: spot.y, color: draw.value };
-  });
-  state.drifts = state.level.drifts.map((d) => ({ x: d.x, y: d.y, dir: d.dir }));
-  state.carried = [];
-  state.conflicts = [];
-  state.merges = 0;
-  state.open = false;
-  state.invuln = 0;
-  state.levelTicks = 0;
-}
-
-export function init(seed, options) {
-  const opts = options ?? {};
-  const state = {
-    seed: (seed ?? 0) >>> 0,
-    tick: 0,
-    levelTicks: 0,
-    levels: opts.levels ?? LEVELS,
-    levelIndex: opts.level ?? 0,
-    level: null,
-    player: { x: 0, y: 0 },
+  return {
+    seed: s,
+    level,
+    levelIndex,
+    player: { x: level.start.x, y: level.start.y },
     carried: [],
-    patches: [],
-    drifts: [],
+    patches,
+    drifts: level.drifts.map((d) => ({ x: d.x, y: d.y, dir: d.dir })),
     conflicts: [],
-    score: 0,
-    lives: START_LIVES,
     merges: 0,
     open: false,
     invuln: 0,
+    levelTicks: 0,
+  };
+}
+
+export function init(seed, options = {}) {
+  const levels = options.levels ?? LEVELS;
+  const levelIndex = options.level ?? 0;
+  return {
+    ...loadLevel(levels[levelIndex], seed, levelIndex),
+    levels,
+    tick: 0,
+    score: 0,
+    lives: START_LIVES,
     status: 'playing',
     paused: false,
     events: [],
   };
-  loadLevelInto(state);
-  return state;
 }
 
 export function tileAt(state, x, y) {
-  return tileOf(state.level, x, y);
+  const tiles = state.level.tiles;
+  const row = tiles[y];
+  if (row === undefined || x < 0 || x >= row.length) return '#';
+  return row[x];
+}
+
+// A cell is passable to the player when it is on the map, is not a wall,
+// is a hold or the exit only when `open`, and holds no conflict.
+function playerPassable(level, open, x, y, conflicts) {
+  const ch = tileAt({ level }, x, y);
+  if (ch === '#') return false;
+  if (ch === 'H' || ch === 'X') return open;
+  if (conflicts.some((c) => c.x === x && c.y === y)) return false;
+  return true;
+}
+
+// A cell is passable to a drift when it is on the map and a floor cell or
+// a merge pad: holds and the exit are walls to a drift, open or not.
+function driftPassable(level, x, y, conflicts) {
+  const ch = tileAt({ level }, x, y);
+  if (ch !== '.' && ch !== 'M') return false;
+  return !conflicts.some((c) => c.x === x && c.y === y);
+}
+
+// The step's input: a missing or null input, or a missing field, means no
+// move and no pause (§6 preamble).
+function inputOf(input) {
+  const ok = input !== null && typeof input === 'object';
+  return {
+    move: ok && typeof input.move === 'string' ? input.move : null,
+    pause: ok && input.pause === true,
+  };
+}
+
+function conflictAt(conflicts, x, y) {
+  return conflicts.some((c) => c.x === x && c.y === y);
 }
 
 export function step(state, input) {
-  const move = input && typeof input.move === 'string' && DIRS[input.move] ? input.move : null;
-  const pause = !!(input && input.pause);
+  // 1. A finished game stands still.
+  if (state.status !== 'playing') return { ...state, events: [] };
 
-  // 1. A game that is over keeps the state but the events.
-  if (state.status !== 'playing') {
-    return { ...state, events: [] };
-  }
-
-  // 2. Pause input flips paused; nothing else happens.
+  // 2. Pause flips the flag, nothing else moves.
+  const { move, pause } = inputOf(input);
   if (pause) {
-    return {
-      ...state,
-      paused: !state.paused,
-      events: [state.paused ? 'resume' : 'pause'],
-    };
+    return { ...state, paused: !state.paused, events: [state.paused ? 'resume' : 'pause'] };
   }
 
-  // 3. Paused games tick nothing.
-  if (state.paused) {
-    return { ...state, events: [] };
-  }
+  // 3. A paused game stands still.
+  if (state.paused) return { ...state, events: [] };
 
-  // 4. A playing step: fresh copies of everything the step may change.
+  const events = [];
+  const level = state.level;
   const next = {
     ...state,
-    player: { x: state.player.x, y: state.player.y },
-    carried: [...state.carried],
-    patches: state.patches.map((p) => ({ x: p.x, y: p.y, color: p.color })),
-    drifts: state.drifts.map((d) => ({ x: d.x, y: d.y, dir: d.dir })),
-    conflicts: state.conflicts.map((c) => ({ x: c.x, y: c.y, ttl: c.ttl })),
-    events: [],
+    tick: state.tick + 1,
+    levelTicks: state.levelTicks + 1,
+    events,
   };
-  next.tick = state.tick + 1;
-  next.levelTicks = state.levelTicks + 1;
 
-  // 5. Conflicts age; conflicts at 0 go.
-  next.conflicts = next.conflicts
-    .map((c) => ({ x: c.x, y: c.y, ttl: c.ttl - 1 }))
-    .filter((c) => c.ttl > 0);
-  const level = next.level;
+  // 5. Conflicts age; at 0 they are gone.
+  const conflicts = [];
+  for (const c of state.conflicts ?? []) {
+    const ttl = c.ttl - 1;
+    if (ttl > 0) conflicts.push({ x: c.x, y: c.y, ttl });
+  }
+  next.conflicts = conflicts;
 
-  // 6. The player moves one cell when the target is passable.
-  const playerWas = next.player;
-  if (move) {
-    const nx = playerWas.x + DIRS[move][0];
-    const ny = playerWas.y + DIRS[move][1];
-    if (playerPassable(level, next.open, next.conflicts, nx, ny)) {
-      next.player = { x: nx, y: ny };
+  // 6. The player moves one cell, when the target cell allows it.
+  const player = state.player;
+  const before = { x: player.x, y: player.y };
+  let px = player.x;
+  let py = player.y;
+  if (move && DIRS[move]) {
+    const [dx, dy] = DIRS[move];
+    if (playerPassable(level, state.open, px + dx, py + dy, conflicts)) {
+      px += dx;
+      py += dy;
     }
   }
+  next.player = { x: px, y: py };
 
-  // 7. Pickup.
+  next.patches = [...state.patches];
+  next.carried = [...state.carried];
+
+  // 7. Pickup: a lying patch on the player's cell, with a hand free.
   if (next.carried.length < CARRY_MAX) {
-    const at = next.patches.findIndex((p) => p.x === next.player.x && p.y === next.player.y);
-    if (at !== -1) {
-      next.carried.push(next.patches[at].color);
-      next.patches.splice(at, 1);
-      next.events.push('pickup');
+    const i = next.patches.findIndex((p) => p.x === px && p.y === py);
+    if (i !== -1) {
+      next.carried = [...next.carried, next.patches[i].color];
+      next.patches = next.patches.filter((p, j) => j !== i);
+      events.push('pickup');
     }
   }
 
-  // 8. Merge.
-  if (tileOf(level, next.player.x, next.player.y) === 'M' && next.carried.length > 0) {
-    const n = next.carried.length;
-    let gain = PATCH_BASE * n * n;
-    if (n >= 2 && next.carried.every((c) => c === next.carried[0])) {
-      gain += SAME_COLOR_BONUS * n;
-    }
-    next.score += gain;
+  // 8. Merge on a pad: the carried patches in one go.
+  const n = next.carried.length;
+  if (n > 0 && tileAt({ level }, px, py) === 'M') {
+    const same = next.carried.every((c) => c === next.carried[0]);
+    next.score = next.score + PATCH_BASE * n * n + (n >= 2 && same ? SAME_COLOR_BONUS * n : 0);
     next.merges += n;
     next.carried = [];
-    next.events.push('merge');
+    events.push('merge');
     if (!next.open && next.merges >= level.quorum) {
       next.open = true;
-      next.events.push('quorum');
+      events.push('quorum');
     }
   }
 
-  // 9. Exit: the step ends here.
-  if (next.open && tileOf(level, next.player.x, next.player.y) === 'X') {
+  // 9. An open exit ships the level: time bonus, next level, or the win.
+  if (next.open && tileAt({ level }, px, py) === 'X') {
     next.score += Math.max(0, level.par - next.levelTicks) * TIME_BONUS_PER_TICK;
     if (next.levelIndex + 1 < next.levels.length) {
-      next.levelIndex = state.levelIndex + 1;
-      loadLevelInto(next);
-      next.events.push('level');
+      const loaded = loadLevel(next.levels[next.levelIndex + 1], next.seed, next.levelIndex + 1);
+      Object.assign(next, loaded);
+      events.push('level');
     } else {
       next.status = 'won';
-      next.events.push('won');
+      events.push('won');
     }
-    return next;
+    return next; // the step ends here, before the drifts move
   }
 
-  // 10. Drifts move on their tick.
+  // 10. Drifts move on their period, each turning clockwise from its own
+  // direction to the first passable target.
   const driftsMoved = next.tick % level.driftPeriod === 0;
-  const driftsBefore = next.drifts;
+  let drifts = state.drifts;
+  const driftBefore = [];
+  const driftMovedFlag = [];
   if (driftsMoved) {
-    next.drifts = next.drifts.map((d) => driftMove(level, d, next.conflicts));
+    drifts = state.drifts.map((d, i) => {
+      const copy = { x: d.x, y: d.y, dir: d.dir };
+      driftBefore[i] = { x: d.x, y: d.y };
+      driftMovedFlag[i] = false;
+      const from = CLOCKWISE.indexOf(d.dir);
+      for (let k = 0; k < 4; k++) {
+        const dir = CLOCKWISE[(from + k) % 4];
+        const [dx, dy] = DIRS[dir];
+        if (driftPassable(level, copy.x + dx, copy.y + dy, conflicts)) {
+          copy.dir = dir;
+          copy.x += dx;
+          copy.y += dy;
+          driftMovedFlag[i] = true;
+          break;
+        }
+      }
+      return copy;
+    });
+    next.drifts = drifts;
+
+    // 11. Two or more drifts on one cell reverse, and leave a conflict
+    // there unless one already is, once per cell, in reading order.
+    for (let y = 0; y < level.height; y++) {
+      for (let x = 0; x < level.width; x++) {
+        const here = drifts.filter((d) => d.x === x && d.y === y);
+        if (here.length >= 2) {
+          for (const d of here) d.dir = OPPOSITE[d.dir] ?? d.dir;
+          if (!conflictAt(conflicts, x, y)) conflicts.push({ x, y, ttl: CONFLICT_TICKS });
+          events.push('conflict');
+        }
+      }
+    }
   }
 
-  // 11. Collisions, only on a tick when drifts moved.
-  if (driftsMoved) {
-    const stacked = new Map();
-    for (const d of next.drifts) {
-      const key = d.x + ',' + d.y;
-      stacked.set(key, (stacked.get(key) ?? 0) + 1);
-    }
-    const cells = [...stacked.entries()]
-      .filter(([, n]) => n >= 2)
-      .map(([key]) => key.split(',').map(Number))
-      .sort((a, b) => a[1] - b[1] || a[0] - b[0]);
-    for (const [cx, cy] of cells) {
-      for (const d of next.drifts) {
-        if (d.x === cx && d.y === cy) d.dir = REVERSE[d.dir];
-      }
-      if (!conflictOn(next.conflicts, cx, cy)) {
-        next.conflicts.push({ x: cx, y: cy, ttl: CONFLICT_TICKS });
-      }
-      next.events.push('conflict');
-    }
-  }
-
-  // 12. Hits: immune steps only spend the immunity.
+  // 12. Hits: none while invulnerable; a drift on the player's cell, or
+  // one that swapped cells with it, drops carried patches or a life.
   if (next.invuln > 0) {
-    next.invuln = next.invuln - 1;
-  } else if (
-    next.drifts.some((d) => d.x === next.player.x && d.y === next.player.y) ||
-    (driftsMoved &&
-      // A drift that swapped cells with the player: it is now where the
-      // player was before step 6, and was where the player is now.
-      next.drifts.some(
-        (d, i) =>
-          d.x === playerWas.x && d.y === playerWas.y &&
-          driftsBefore[i].x === next.player.x && driftsBefore[i].y === next.player.y
-      ))
-  ) {
-    if (next.carried.length > 0) {
-      next.carried = [];
-      next.invuln = INVULN_TICKS;
-      next.events.push('drop');
-    } else {
-      next.lives = next.lives - 1;
-      next.events.push('hit');
-      if (next.lives <= 0) {
-        next.status = 'lost';
-        next.events.push('lost');
-      } else {
-        next.player = { x: level.start.x, y: level.start.y };
+    next.invuln -= 1;
+  } else {
+    let hit = drifts.some((d) => d.x === px && d.y === py);
+    if (!hit && driftsMoved) {
+      for (let i = 0; i < drifts.length; i++) {
+        if (driftMovedFlag[i] && drifts[i].x === before.x && drifts[i].y === before.y
+          && driftBefore[i].x === px && driftBefore[i].y === py) {
+          hit = true;
+          break;
+        }
+      }
+    }
+    if (hit) {
+      if (next.carried.length > 0) {
+        next.carried = [];
         next.invuln = INVULN_TICKS;
+        events.push('drop');
+      } else {
+        next.lives -= 1;
+        events.push('hit');
+        if (next.lives <= 0) {
+          next.lives = 0;
+          next.status = 'lost';
+          events.push('lost');
+        } else {
+          next.player = { x: level.start.x, y: level.start.y };
+          next.invuln = INVULN_TICKS;
+        }
       }
     }
   }
 
-  // 13. Spawns on their tick while still playing.
-  if (
-    next.status === 'playing' &&
-    next.levelTicks % level.spawnEvery === 0 &&
-    next.patches.length + next.carried.length < level.spawns.length
-  ) {
-    const free = level.spawns.filter(
-      (spot) =>
-        !next.patches.some((p) => p.x === spot.x && p.y === spot.y) &&
-        !(spot.x === next.player.x && spot.y === next.player.y) &&
-        !next.drifts.some((d) => d.x === spot.x && d.y === spot.y)
-    );
+  // 13. Spawns: one patch on a free spawn point, position drawn first,
+  // then its colour.
+  if (next.status === 'playing'
+    && next.levelTicks % level.spawnEvery === 0
+    && next.patches.length + next.carried.length < level.spawns.length) {
+    const free = level.spawns.filter((sp) => !conflictAt(next.patches, sp.x, sp.y)
+      && !(sp.x === next.player.x && sp.y === next.player.y)
+      && !drifts.some((d) => d.x === sp.x && d.y === sp.y));
     if (free.length > 0) {
-      const where = rngInt(next.seed, free.length);
-      next.seed = where.seed;
-      const which = rngInt(next.seed, COLORS);
-      next.seed = which.seed;
-      next.patches.push({ x: free[where.value].x, y: free[where.value].y, color: which.value });
-      next.events.push('spawn');
+      const spot = rngInt(next.seed, free.length);
+      const color = rngInt(spot.seed, COLORS);
+      next.patches = [...next.patches, { x: free[spot.value].x, y: free[spot.value].y, color: color.value }];
+      next.seed = color.seed;
+      events.push('spawn');
     }
   }
 
