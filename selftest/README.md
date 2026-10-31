@@ -14,4 +14,8 @@ Nothing under `tests/` is touched.
 
 `30-particles.test.mjs` mirrors the section 30 acceptance assertions with
 hand-built states too: no `src/core/game.js` needed, so §23 can be verified
-on its own. Same run command as above.
+on its own. Same shape as above, but pass the files:
+
+```sh
+node --test selftest/*.mjs
+```
