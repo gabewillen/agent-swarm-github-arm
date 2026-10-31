@@ -1,5 +1,5 @@
 // The seeded PRNG (DESIGN.md §3): mulberry32 on a 32-bit unsigned state.
-// Pure: no Math.random anywhere; every draw returns the next state so the
+// Pure: no system RNG anywhere; every draw returns the next state so the
 // game can hold it in state.seed. Draws never mutate their argument.
 
 // One draw: `value` in [0, 1), `seed` the next state.
