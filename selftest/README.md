@@ -19,3 +19,18 @@ on its own. Same shape as above, but pass the files:
 ```sh
 node --test selftest/*.mjs
 ```
+## Selfcheck for agent-4's page runtime (area 15 + §15–§16 wrapper)
+
+`main-runtime.test.mjs` runs the real `src/main.js` headlessly: a
+recording 2D context, an rAF + setInterval clock, a Map-backed
+localStorage, and a counting AudioContext, with each test re-importing
+the entry under a fresh specifier like a fresh page load. It covers what
+the section 23 text scan cannot see: the frame loop staying alive, Enter
+picking, pause/resume, help, the editor painting + persistence + custom
+run, the daily run, the audio unlock and the mute cycle (nothing
+reschedules while `Sound: off`), the visibilitychange pause, a long
+input churn, and hostile storage. Run the file alone:
+
+```sh
+node --test selftest/main-runtime.test.mjs
+```
