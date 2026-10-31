@@ -15,7 +15,13 @@ export function createAudio(AudioContextCtor) {
     if (muted || !AudioContextCtor) return;
     const cue = CUES[name];
     if (!cue) return;
-    if (!ctx) ctx = new AudioContextCtor();
+    if (!ctx) {
+      ctx = new AudioContextCtor();
+      // A context made during a gesture still often starts suspended;
+      // politely ask it to run. Nothing happens when the host has no
+      // resume at all (the tests' fake contexts, older WebAudio shims).
+      if (typeof ctx.resume === 'function') ctx.resume();
+    }
     const t0 = ctx.currentTime;
     const spread = SPREAD[name] || 0;
     cue.notes.forEach((note, i) => {
