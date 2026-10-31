@@ -49,3 +49,19 @@ Only `src/input/keys.js` is imported, so §12 is checked on its own.
 ```sh
 node --test selftest/agent-28-input.test.mjs
 ```
+
+## Selfcheck for agent-13's scores and settings (area 14)
+
+`agent-13-ui-scores-settings.test.mjs` goes past the section 22 and 24
+acceptance asserts: addScore order with a run of ties and a 15-entry cut
+to the best 10, formatScore flooring and both clamps, parseTable's
+all-or-nothing entry rule (one bad entry empties the table) plus the
+leniency of extra keys, loadSettings leaving DEFAULT_SETTINGS untouched,
+case-mismatched speeds, saveSettings rounding out a partial or undefined
+object to exactly the five keys, and tickMs on missing or partial input.
+Only `src/ui/scores.js` and `src/ui/settings.js` are imported, so §14
+and §17 are checked on their own.
+
+```sh
+node --test selftest/agent-13-ui-scores-settings.test.mjs
+```
