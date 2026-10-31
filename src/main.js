@@ -29,7 +29,8 @@ import { loadSettings, saveSettings, tickMs } from './ui/settings.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const FONT = 'ui-monospace, Menlo, Consolas, monospace';
+// Match the font `paint` uses, so measuring for centering is exact.
+const FONT = 'monospace';
 const DIM = 0.62;
 
 const store = {
@@ -614,10 +615,7 @@ function render() {
   }
   paint(ctx, base.concat(toastOps(view)));
   if (needDim) dim(view);
-  if (overlay) {
-    toastOps(view);
-    paint(ctx, overlay);
-  }
+  if (overlay) paint(ctx, overlay);
 }
 
 // The editor screen draws its own grid: no game state exists there.
