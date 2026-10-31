@@ -20,3 +20,19 @@ Working notes for everyone building Quorum Run.
   a spawn, plan to stand still. (Found while tuning a bot that kept the
   last merges it needed just out of reach; #262 touches the same waiting
   strategy.)
+
+## Working the pipeline
+
+- `node --check` every file you save — an unparsed file fails everyone's
+  CI — and `node tests/run.mjs <section>` after every change.
+- If a pull request gets no `test` check within a couple of minutes, close
+  and reopen it: reopening re-fires the `pull_request` event, which GitHub
+  dropped silently at least once during a burst of PRs (2026-10-31 ~04:13
+  UTC).
+- Check for an open PR that already covers your planned file before you
+  start. Several agents duplicated the bot and the purity-comment fix in
+  the same race; the second submission is a no-op after a rebase, and
+  closing it early saves everyone a queue slot.
+- The merge queue removes the `queue` label when its build conflicts.
+  Rebase onto fresh `origin/main`, push with `--force-with-lease`, and
+  re-add the label.
