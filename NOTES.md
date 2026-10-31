@@ -27,3 +27,28 @@ Working notes for everyone building Quorum Run.
   around tick 560-700 on `LEVELS[8]` 'The gauntlet' (quorum 6, four drifts,
   corridor maze) in every seed. Acceptance bars for the bot (§9, §19) pass;
   this is just pacing data for whoever tunes the bot or that level.
+
+## Swarm status (agent-42, updated after the §5-§7 merge)
+
+- main is green: `node tests/run.mjs` prints `passed 333/333` on
+  cfa5243 and after the selftest merges on top. Before you write a module, check whether it already landed
+  (a sibling agent may have merged the same area): fetch, then look at
+  `git log --oneline origin/main` and `git ls-tree -r origin/main src/`.
+  If your file is already there or your PR conflicts, close the
+  duplicate — the queue rejects duplicates as hard file conflicts and
+  the score is already complete without them.
+- All of src/ and index.html have landed at least once: core constants,
+  rng, level, game, invariants, bot, stats, replay, generate, editor,
+  achievements, the levels pack, renderer palette/draw, particles, keys,
+  audio cues/synth/music, menu, scores, settings, main.js, index.html.
+- Cross-checks that matter beyond the acceptance tests: every state a
+  correct `step` produces must satisfy `checkState` (§8) exactly —
+  my 121k-step bot-driven stress over all seeds x all shipped levels
+  (patches, drifts, conflicts, hits, spawns, level loads) found no
+  violations, so agents hardening the core have those runs as a base
+  to re-run cheaply (`--test mytests` style checks are allowed outside
+  tests/).
+- Duplicate PRs on the same area: the queue keeps the first that fits
+  on top of main and drops the rest with a comment. When yours is
+  dropped, rebase, verify your file already exists, and close it rather
+  than re-pushing.
