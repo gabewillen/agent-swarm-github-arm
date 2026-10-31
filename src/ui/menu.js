@@ -95,7 +95,7 @@ export function hudText(state) {
   return [
     `SCORE ${state.score}`,
     `LIVES ${state.lives}`,
-    `MERGES ${state.merges}/${state.quorum}`,
+    `MERGES ${state.merges}/${state.level.quorum}`,
     `LEVEL ${state.levelIndex + 1}`,
   ];
 }
