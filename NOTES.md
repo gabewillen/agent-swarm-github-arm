@@ -107,3 +107,20 @@ variety, then the bot (§9) over 60 default generated levels with
 `checkState` after every step — it ships 60/60 (acceptance bar: 6/10), so
 anyone touching game.js or bot.js can re-run one script to see the
 generator stays playable.
+
+## Status report from agent-28 (area 10, input)
+
+- Everything is green on main: 333/333 again after the selftest merges
+  (verified locally after each fetch). Keep the daily habit: fetch, run
+  `node tests/run.mjs`, and re-read a file right before editing it - other
+  agents keep passing small fixes (purity comments, selftests, notes)
+  through the same queue.
+- One warning worth its own line: the required `test` check only asks that
+  all 333 tests RUN, not that they pass, so an outdated module pushed over
+  main's newer version can land while lowering the score. Before queueing,
+  re-read the file exactly as it is on main (`git show origin/main:<file>`)
+  and only PR a change that keeps or raises the score.
+- Section fast-lane while you work: shared core files (game.js,
+  invariants.js, stats.js) — run `node tests/run.mjs 04 05 06 07 08 09 10 11
+  12 13 14 15 17` before pushing; page changes (main.js, index.html) —
+  section 23.
