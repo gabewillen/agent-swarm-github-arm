@@ -170,11 +170,14 @@ function applySound(on) {
 }
 
 // Background music: generated bars on their own context, started once a
-// gesture happens (browsers refuse audio before one).
+// gesture happens (browsers refuse audio before one). 'Sound: off' on the
+// menu (DESIGN.md §14) silences the whole game, cues and bars alike, so
+// the scheduler also waits on `settings.sound` — that way a later gesture
+// cannot silently bring the music back while the player muted it.
 const music = { ctx: null, next: 0, index: 0, timer: null };
 
 function musicStart() {
-  if (music.timer || !settings.music || !AudioCtor) return;
+  if (music.timer || !settings.music || !settings.sound || !AudioCtor) return;
   try {
     music.ctx = new AudioCtor();
   } catch {
@@ -191,7 +194,7 @@ function musicStop() {
 }
 
 function musicPump() {
-  if (!music.ctx) {
+  if (!music.ctx || !settings.sound || !settings.music) {
     musicStop();
     return;
   }
