@@ -245,11 +245,12 @@ export function botInput(state) {
 
   // ---- Time-expanded search (§9: "path-finding over the grid").
   //
-  // Breadth-first over (step k, cell): layer k holds every cell the player
-  // can occupy safely at the start of step k + 1, where each transition
-  // c -> q passes the drift check of the simulated step. The first move is
-  // read off the route to the target, or to the closest reached cell if the
-  // target is out of the horizon.
+  // Breadth-first over (step k, cell) under the drift look-ahead: layer k
+  // holds every cell the player can hold safely at that step, each transition
+  // c -> q passing the drift check of that simulated step. Layer 1 gives the
+  // safe first steps; each candidate is then scored by how long a safe plan
+  // can follow it (its own fork of the same search), so picks stay alive and
+  // make progress instead of waiting out a route that dies a step later.
   const un = (c, q, k) => {
     const cg = confG[k];
     if (cg && q !== c && cg[q]) return true;
@@ -265,60 +266,73 @@ export function botInput(state) {
     return false;
   };
 
-  const parent = new Int32Array((K + 1) * N).fill(-1);
-  let bestK = 0;
-  let bestCell = p0;
-  let bestVal = dGoal[p0] >= 0 ? dGoal[p0] : 100000;
-  let foundK = -1;
-  let foundCell = -1;
-  const layer0 = new Uint8Array(N);
-  layer0[p0] = 1;
-  let cur = layer0;
-  for (let k = 1; k <= K; k++) {
-    const nxt = new Uint8Array(N);
-    const base = k * N;
-    let progress = false;
-    for (let c = 0; c < N; c++) {
-      if (!cur[c]) continue;
-      const cx = c % W;
-      const cy = (c / W) | 0;
-      for (let di = 0; di < 5; di++) {   // four moves, then stay
-        let q = c;
-        if (di < 4) {
-          const nx = cx + DDX[di];
-          const ny = cy + DDY[di];
-          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-          q = ny * W + nx;
-          if (!passTile[q]) continue;
-        }
-        if (un(c, q, k)) continue;
-        if (nxt[q]) continue;
-        nxt[q] = 1;
-        parent[base + q] = c;
-        progress = true;
-        if (q === goal) { foundK = k; foundCell = q; }
-        const dv = dGoal[q];
-        const val = dv >= 0 ? dv : 100000;
-        if (val < bestVal) { bestVal = val; bestK = k; bestCell = q; }
-      }
-    }
-    if (foundK >= 0) break;
-    if (!progress) break;
-    cur = nxt;
+  const stepFrom = (c, di) => {
+    // Cell reached from c by direction di (0..3), or c itself for di = 4
+    // (stay). Returns -1 for out of bounds or a wall.
+    if (di === 4) return c;
+    const nx = (c % W) + DDX[di];
+    const ny = ((c / W) | 0) + DDY[di];
+    if (nx < 0 || ny < 0 || nx >= W || ny >= H) return -1;
+    const q = ny * W + nx;
+    return passTile[q] ? q : -1;
+  };
+
+  // Layer 1: every first step that is safe on its own.
+  const layer1 = new Uint8Array(N);
+  for (let di = 0; di < 5; di++) {
+    const q = stepFrom(p0, di);
+    if (q >= 0 && !un(p0, q, 1)) layer1[q] = 1;
   }
 
-  let kk = 0;
-  let cc = -1;
-  if (foundK >= 0) { kk = foundK; cc = foundCell; }
-  else { kk = bestK; cc = bestCell; }
-  if (kk <= 0 || cc < 0) return NO_INPUT;
-  while (kk > 1) {
-    cc = parent[kk * N + cc];
-    kk--;
+  // Candidate first steps. For each direction, if its arrival cell is a safe
+  // layer-1 member, measure how far a safe plan can follow it: a dedicated
+  // BFS from that cell alone over the sim steps k = 2..K, tracking the
+  // deepest layer that still has a choice. Survival first, then progress
+  // toward the goal, then order (moves before waiting on full ties).
+  const forkDepth = (c1) => {
+    let cur = new Uint8Array(N);
+    cur[c1] = 1;
+    let nxt = new Uint8Array(N);
+    let d = 1;
+    for (let k = 2; k <= K; k++) {
+      nxt.fill(0);
+      let any = false;
+      for (let c = 0; c < N; c++) {
+        if (!cur[c]) continue;
+        for (let di = 0; di < 5; di++) {   // four moves, then stay
+          const q = stepFrom(c, di);
+          if (q < 0) continue;
+          if (un(c, q, k)) continue;
+          nxt[q] = 1;
+          any = true;
+        }
+      }
+      if (!any) break;
+      d = k;
+      const t = cur; cur = nxt; nxt = t;
+    }
+    return d;
+  };
+
+  let bi = -1;       // best arrival cell so far
+  let bDepth = -1;   // its survival depth
+  let bDg = 0;       // its goal distance
+  for (let ci = 0; ci < 5; ci++) {
+    const q = stepFrom(p0, ci);
+    if (q < 0) continue;
+    if (!layer1[q]) continue;   // not a safe arrival at step 1
+    const dep = forkDepth(q);
+    const dv = dGoal[q] >= 0 ? dGoal[q] : 10000;
+    if (dep > bDepth || (dep === bDepth && dv < bDg)) {
+      bDepth = dep;
+      bDg = dv;
+      bi = q;
+    }
   }
-  if (cc === p0) return NO_INPUT;   // the route starts by waiting in place
-  const dx = (cc % W) - p0x;
-  const dy = ((cc / W) | 0) - p0y;
+  if (bi < 0) return NO_INPUT;   // no safe first step at all
+  if (bi === p0) return NO_INPUT;   // waiting is at least as good: hold
+  const dx = (bi % W) - p0x;
+  const dy = ((bi / W) | 0) - p0y;
   for (let di = 0; di < 4; di++) {
     if (DDX[di] === dx && DDY[di] === dy) return { move: CLOCKWISE[di], pause: false };
   }
