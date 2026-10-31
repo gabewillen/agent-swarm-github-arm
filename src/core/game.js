@@ -9,10 +9,10 @@
 
 import {
   CARRY_MAX, START_LIVES, INVULN_TICKS, CONFLICT_TICKS, PATCH_BASE,
-  SAME_COLOR_BONUS, TIME_BONUS_PER_TICK, COLORS, DIRS,
+  SAME_COLOR_BONUS, TIME_BONUS_PER_TICK, COLORS, CLOCKWISE, DIRS,
 } from './constants.js';
 import { rngInt } from './rng.js';
-// INVULN_TICKS and CONFLICT_TICKS above are spent by the drift phase below
+// INVULN_TICKS, CONFLICT_TICKS, and CLOCKWISE are spent by the drift phase below
 // (§6 steps 10-13); the rest of the constants drive steps 1 to 9.
 
 // The level loader (§4, src/core/level.js) and the shipped levels
@@ -285,10 +285,8 @@ export function step(state, input) {
 // drift-phase owners of this file (test sections 09, 10, 11, 12, and 14) so
 // that the steps above and this one change in separate places.
 //
-// The phase below is a do-nothing stand-in until that code lands: steps 1 to
-// 9 above are exact, drifts hold still, and nobody is hit or spawned. When
-// the phase goes in, it steps the given state through §6 steps 10 to 13 in
-// order and returns it with `events` extended by whatever they add:
+// The phase below steps the given state, a fresh copy from `step`, through
+// §6 steps 10 to 13 in order and returns it with `events` extended by whatever they add:
 //
 //   10. When `state.tick % state.level.driftPeriod === 0`, each drift, in
 //       array order, moves one cell in the first direction, from its own
@@ -318,6 +316,122 @@ export function step(state, input) {
 //       appended to `patches`; event `spawn`.
 // ---------------------------------------------------------------------------
 
+// A drift's direction after a collision: the opposite.
+const REVERSE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
+// §6 step 10: one drift's move — the first passable direction from its own
+// onward through CLOCKWISE; with none passable it stays and keeps facing.
+function moveDrift(state, drift) {
+  const from = CLOCKWISE.indexOf(drift.dir);
+  for (let i = 0; i < CLOCKWISE.length; i++) {
+    const dir = CLOCKWISE[(from + i + CLOCKWISE.length) % CLOCKWISE.length];
+    const dx = DIRS[dir][0];
+    const dy = DIRS[dir][1];
+    const x = drift.x + dx;
+    const y = drift.y + dy;
+    if (passableForDrift(state, x, y)) return { x, y, dir };
+  }
+  return { x: drift.x, y: drift.y, dir: drift.dir };
+}
+
 function driftPhase(state, events, playerBefore) {
+  // §6 step 10. Only on a moving tick does a drift take a cell; befores
+  // holds where each drift was, so a cell swap below can be seen.
+  const befores = state.drifts;
+  const moving = state.tick % state.level.driftPeriod === 0;
+  if (moving) state.drifts = befores.map((drift) => moveDrift(state, drift));
+
+  // §6 step 11. Still only on a moving tick: each cell, in reading order,
+  // that holds two or more drifts reverses every drift there and leaves a
+  // conflict — unless that cell already holds one — with one event per cell.
+  if (moving) {
+    const groups = new Map();
+    for (let i = 0; i < state.drifts.length; i++) {
+      const drift = state.drifts[i];
+      const key = drift.x + ',' + drift.y;
+      const group = groups.get(key);
+      if (group === undefined) groups.set(key, [i]);
+      else group.push(i);
+    }
+    const cells = [...groups.keys()]
+      .map((key) => key.split(',').map(Number))
+      .sort((a, b) => (a[1] !== b[1] ? a[1] - b[1] : a[0] - b[0]));
+    for (const [x, y] of cells) {
+      const group = groups.get(x + ',' + y);
+      if (group.length < 2) continue;
+      const here = group;
+      state.drifts = state.drifts.map((drift, i) =>
+        here.includes(i) ? { ...drift, dir: REVERSE[drift.dir] ?? drift.dir } : drift);
+      if (!state.conflicts.some((c) => c.x === x && c.y === y)) {
+        state.conflicts = [...state.conflicts, { x, y, ttl: CONFLICT_TICKS }];
+      }
+      events.push('conflict');
+    }
+  }
+
+  // §6 step 12. Hits: while `invuln` lasts nothing lands and it burns down
+  // by one. Then a drift on the player's cell, or a drift that moved this
+  // tick and swapped cells with the player (it now stands where the player
+  // was before step 6 and stood where the player now stands), is a hit.
+  // Carrying patches, the hit drops them all; empty-handed, it costs a
+  // life — at the last life the game is lost, else the start again.
+  if (state.invuln > 0) {
+    state.invuln -= 1;
+  } else {
+    let hit = false;
+    for (let i = 0; i < state.drifts.length; i++) {
+      const drift = state.drifts[i];
+      if (drift.x === state.player.x && drift.y === state.player.y) {
+        hit = true;
+        break;
+      }
+      if (moving
+        && drift.x === playerBefore.x && drift.y === playerBefore.y
+        && befores[i].x === state.player.x && befores[i].y === state.player.y) {
+        hit = true;
+        break;
+      }
+    }
+    if (hit) {
+      if (state.carried.length > 0) {
+        state.carried = [];
+        state.invuln = INVULN_TICKS;
+        events.push('drop');
+      } else {
+        state.lives -= 1;
+        events.push('hit');
+        if (state.lives <= 0) {
+          state.status = 'lost';
+          events.push('lost');
+        } else {
+          state.player = { x: state.level.start.x, y: state.level.start.y };
+          state.invuln = INVULN_TICKS;
+        }
+      }
+    }
+  }
+
+  // §6 step 13. While the game still plays, a spawn tick with room below
+  // the number of spawn points puts one patch on a free point: not held by
+  // a patch, not the player's cell, no drift on it. Its spot comes from a
+  // first draw, its colour from a second, and both advance the seed.
+  if (state.status === 'playing'
+    && state.levelTicks % state.level.spawnEvery === 0
+    && state.patches.length + state.carried.length < state.level.spawns.length) {
+    const free = state.level.spawns.filter((spot) =>
+      !state.patches.some((p) => p.x === spot.x && p.y === spot.y)
+      && !(state.player.x === spot.x && state.player.y === spot.y)
+      && !state.drifts.some((d) => d.x === spot.x && d.y === spot.y));
+    if (free.length > 0) {
+      const place = rngInt(state.seed, free.length);
+      state.seed = place.seed;
+      const spot = free[place.value];
+      const color = rngInt(state.seed, COLORS);
+      state.seed = color.seed;
+      state.patches = [...state.patches, { x: spot.x, y: spot.y, color: color.value }];
+      events.push('spawn');
+    }
+  }
+
   return withEvents(state, events);
 }
