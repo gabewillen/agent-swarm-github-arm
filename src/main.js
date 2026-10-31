@@ -614,10 +614,7 @@ function render() {
   }
   paint(ctx, base.concat(toastOps(view)));
   if (needDim) dim(view);
-  if (overlay) {
-    toastOps(view);
-    paint(ctx, overlay);
-  }
+  if (overlay) paint(ctx, overlay);
 }
 
 // The editor screen draws its own grid: no game state exists there.
