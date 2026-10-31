@@ -64,8 +64,12 @@ export function drawList(state, view) {
     const { x, y, s } = inset(pad.cx, pad.cy, 0.3);
     ops.push(rect('merge', x, y, s, s, PALETTE.accent));
   }
-  // The exit: accent once the quorum has opened it, dim before.
-  if (exit) ops.push(rect('exit', px(exit.cx), py(exit.cy), cell, cell, state.open ? PALETTE.accent : PALETTE.dim));
+  // The exit: a full accent doorway while the quorum holds, a smaller dim
+  // marker when it is sealed (so a closed hold never looks like it).
+  if (exit) {
+    const { x, y, s } = inset(exit.cx, exit.cy, state.open ? 0 : 0.25);
+    ops.push(rect('exit', x, y, s, s, state.open ? PALETTE.accent : PALETTE.dim));
+  }
   // Hold doors: dim blocks until open, then they look like floor.
   for (const hold of holds) {
     ops.push(rect('hold', px(hold.cx), py(hold.cy), cell, cell, state.open ? PALETTE.floor : PALETTE.dim));
