@@ -11,11 +11,14 @@
 import {
   CARRY_MAX,
   START_LIVES,
+  INVULN_TICKS,
+  CONFLICT_TICKS,
   PATCH_BASE,
   SAME_COLOR_BONUS,
   TIME_BONUS_PER_TICK,
   COLORS,
   DIRS,
+  CLOCKWISE,
 } from './constants.js';
 import { rngInt } from './rng.js';
 import { parseLevel } from './level.js';
@@ -113,6 +116,15 @@ export function playerCanEnter(state, conflicts, x, y, open) {
   return !blocksPlayer(tileAt(state, x, y), open) && !conflictAt(conflicts, x, y);
 }
 
+// A cell blocks a drift when it is a wall, a hold, or the exit (open or
+// not), per §6 step 10; merge pads, patches, the player, and other
+// drifts never block one.
+export function driftCanEnter(state, conflicts, x, y) {
+  const tile = tileAt(state, x, y);
+  if (tile === '#' || tile === 'H' || tile === 'X') return false;
+  return !conflictAt(conflicts, x, y);
+}
+
 // ---- one step (§6) ------------------------------------------------------
 
 function readInput(input) {
@@ -160,6 +172,7 @@ export function step(state, input) {
   let merges = state.merges;
   let open = state.open;
   let invuln = state.invuln;
+  let lives = state.lives;
   let status = state.status;
 
   // 5. Conflicts age.
@@ -245,11 +258,127 @@ export function step(state, input) {
     };
   }
 
-  // ---- §6 steps 10 to 13 (drift movement, drift collisions, hits,
-  // spawns) belong here: insert them between this line and the assembly
-  // below, reassigning the working values above (drifts, conflicts,
-  // carried, patches, score, lives, invuln, status, seed, events, ...).
-  // Reaching this point means the level did not end this step.
+  // Reaching this point means the level did not end this step, so the
+  // drifts get their say: §6 steps 10 to 13 (drift movement, drift
+  // collisions, hits, spawns).
+
+  // 10. On a drift tick (tick % driftPeriod === 0), each drift in array
+  // order tries its own direction first, then each next direction
+  // clockwise, and turns to and moves one cell in the first passable one;
+  // with no passable direction it stays and keeps its direction.
+  const driftsMove = tick % state.level.driftPeriod === 0;
+  let driftMoved = null;
+  if (driftsMove) {
+    drifts = state.drifts.map((d) => ({ x: d.x, y: d.y, dir: d.dir }));
+    driftMoved = state.drifts.map(() => false);
+    for (let i = 0; i < drifts.length; i++) {
+      const d = drifts[i];
+      const from = CLOCKWISE.indexOf(d.dir);
+      for (let k = 0; k < CLOCKWISE.length; k++) {
+        const nextDir = CLOCKWISE[(from + k) % CLOCKWISE.length];
+        const [dx, dy] = DIRS[nextDir];
+        const nx = d.x + dx;
+        const ny = d.y + dy;
+        if (driftCanEnter(state, conflicts, nx, ny)) {
+          d.x = nx;
+          d.y = ny;
+          d.dir = nextDir;
+          driftMoved[i] = true;
+          break;
+        }
+      }
+      // No passable direction: the drift stays and keeps its direction.
+    }
+  }
+
+  // 11. On a tick when drifts moved, every cell holding two or more
+  // drifts, in reading order, reverses each drift there and leaves a
+  // conflict (one per cell, so an existing one is reused), with one
+  // conflict event for the cell.
+  if (driftsMove) {
+    const stacked = new Map();
+    for (const d of drifts) {
+      const key = `${d.x},${d.y}`;
+      stacked.set(key, (stacked.get(key) ?? 0) + 1);
+    }
+    const cells = [...stacked.entries()]
+      .filter(([, n]) => n >= 2)
+      .map(([key]) => {
+        const sep = key.indexOf(',');
+        return { x: Number(key.slice(0, sep)), y: Number(key.slice(sep + 1)) };
+      })
+      .sort((a, b) => a.y - b.y || a.x - b.x);
+    for (const { x, y } of cells) {
+      for (const d of drifts) {
+        if (d.x === x && d.y === y) {
+          d.dir = d.dir === 'up' ? 'down'
+            : d.dir === 'down' ? 'up'
+            : d.dir === 'left' ? 'right'
+            : 'left';
+        }
+      }
+      if (!conflictAt(conflicts, x, y)) {
+        conflicts = conflicts.concat([{ x, y, ttl: CONFLICT_TICKS }]);
+      }
+      events.push('conflict');
+    }
+  }
+
+  // 12. Hits: while invulnerable the timer falls by one and nothing
+  // hits. Otherwise a drift on the player's cell, or a drift that moved
+  // this step and swapped cells with the player (it is now where the
+  // player was before step 6 and was where the player is now), hits:
+  // carrying, the carried patches drop; empty-handed, a life is lost.
+  if (invuln > 0) {
+    invuln -= 1;
+  } else {
+    const onPlayer = drifts.some((d) => d.x === player.x && d.y === player.y);
+    const swapped = driftsMove && drifts.some((d, i) =>
+      driftMoved[i] &&
+      d.x === state.player.x && d.y === state.player.y &&
+      state.drifts[i].x === player.x && state.drifts[i].y === player.y);
+    if (onPlayer || swapped) {
+      if (carried.length > 0) {
+        carried = [];
+        invuln = INVULN_TICKS;
+        events.push('drop');
+      } else {
+        lives = Math.max(0, lives - 1);
+        events.push('hit');
+        if (lives === 0) {
+          status = 'lost';
+          events.push('lost');
+        } else {
+          player = { x: state.level.start.x, y: state.level.start.y };
+          invuln = INVULN_TICKS;
+        }
+      }
+    }
+  }
+
+  // 13. Spawns: on spawn ticks, while the game still plays and the
+  // spawn points outnumber the patches in play, one patch appears on a
+  // free spawn point (no patch, not the player's cell, no drift on it),
+  // the spot drawn from the seed, then its colour.
+  if (
+    status === 'playing' &&
+    levelTicks % state.level.spawnEvery === 0 &&
+    patches.length + carried.length < state.level.spawns.length
+  ) {
+    const free = state.level.spawns.filter((sp) =>
+      !patches.some((p) => p.x === sp.x && p.y === sp.y) &&
+      !(player.x === sp.x && player.y === sp.y) &&
+      !drifts.some((d) => d.x === sp.x && d.y === sp.y));
+    if (free.length > 0) {
+      const spotDraw = rngInt(seed, free.length);
+      seed = spotDraw.seed;
+      const spot = free[spotDraw.value];
+      const colorDraw = rngInt(seed, COLORS);
+      seed = colorDraw.seed;
+      patches = patches.concat([{ x: spot.x, y: spot.y, color: colorDraw.value }]);
+      events.push('spawn');
+    }
+  }
 
   return {
     ...state,
@@ -265,6 +394,7 @@ export function step(state, input) {
     merges,
     open,
     invuln,
+    lives,
     status,
     events,
   };
