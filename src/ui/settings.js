@@ -44,20 +44,26 @@ export function loadSettings(text) {
   return settings;
 }
 
-/** Serialize settings as JSON holding exactly the five known keys. */
+/**
+ * Serialize settings as JSON holding exactly the five known keys. Fields
+ * that are missing or unreadable take the matching default, so the five
+ * keys are always present.
+ */
 export function saveSettings(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
   return JSON.stringify({
-    sound: settings.sound,
-    music: settings.music,
-    volume: settings.volume,
-    speed: settings.speed,
-    colorblind: settings.colorblind,
+    sound: s.sound ?? DEFAULT_SETTINGS.sound,
+    music: s.music ?? DEFAULT_SETTINGS.music,
+    volume: s.volume ?? DEFAULT_SETTINGS.volume,
+    speed: s.speed ?? DEFAULT_SETTINGS.speed,
+    colorblind: s.colorblind ?? DEFAULT_SETTINGS.colorblind,
   });
 }
 
 /** Real milliseconds per game tick: 160 for slow, TICK_MS for normal, 90 for fast. */
 export function tickMs(settings) {
-  if (settings.speed === 'slow') return SPEED_MS.slow;
-  if (settings.speed === 'fast') return SPEED_MS.fast;
+  const speed = settings && typeof settings === 'object' ? settings.speed : undefined;
+  if (speed === 'slow') return SPEED_MS.slow;
+  if (speed === 'fast') return SPEED_MS.fast;
   return TICK_MS;
 }
