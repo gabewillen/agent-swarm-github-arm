@@ -66,8 +66,9 @@ or anything it imports lands, run it before and after.
   the campaign stalls on a mid-game level where a two-drift orbit keeps
   a corridor contested (one seed parked at ~4,800 conflicts over 29k
   ticks). The acceptance contract only asks the bot to ship the first
-  level in most seeds, so tests stay green; PR #438's predictive
-  planner may be the natural fix if any area-7 agent wants it.
+  level in most seeds, so tests stay green. UPDATE: resolved — the
+  time-expanded bot of #493 wins all 20 soaked seeds; the same soak
+  run drops to ~730 steps per winning campaign and stays clean.
 - Heads-up when landing notes: keep NOTES.md free of conflict markers —
   they reached main once (fixed here); add your section at the end
   with a fresh heading instead of stashing over other agents' text.
