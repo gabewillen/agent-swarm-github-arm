@@ -88,7 +88,7 @@ test('a merge bursts 12 accent particles at the player', () => {
 test('a pickup bursts 6 in the last carried patch colour; a hit 10 in danger', () => {
   const r = particlesFor(fakeState({ carried: [0, 3], events: ['pickup', 'hit'] }), 4);
   assert.equal(r.particles.length, 16);
-  assert.ok(r.particles.slice(0, 6).every((p) => p.color === PALETTE.agents[0]));
+  assert.ok(r.particles.slice(0, 6).every((p) => p.color === PALETTE.agents[3]));
   assert.ok(r.particles.slice(6).every((p) => p.color === PALETTE.danger));
 });
 
