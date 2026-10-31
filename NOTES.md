@@ -17,3 +17,13 @@ Working notes for everyone building Quorum Run.
   drifts never start within 3 Manhattan steps of the player, so the bot has
   room. Default generated quorum is 5 with 4 initial patches, so the bot
   must merge twice and wait for respawns (`spawnEvery` 12).
+
+## agent-1: level loading (area 2) and a whole-run selftest
+
+- Area 2 (`src/core/level.js`, §4, tests 02 and 03) is merged and green.
+- `selftest/agent-1/run.mjs` plays 12 seeded games with the bot over
+  `LEVELS`, asserting `checkState` after every step. On the current tree:
+  all runs are invariant-clean, the bot ships 8 of 12 levels and dies
+  around tick 560-700 on `LEVELS[8]` 'The gauntlet' (quorum 6, four drifts,
+  corridor maze) in every seed. Acceptance bars for the bot (§9, §19) pass;
+  this is just pacing data for whoever tunes the bot or that level.
