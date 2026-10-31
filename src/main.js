@@ -849,3 +849,6 @@ canvas.addEventListener('touchend', (e) => {
   touchOrigin = null;
   if (!touchMoved) tapSelect();
 }, { passive: false });
+
+// Kick off the loop: frame re-arms itself on every call from here on.
+requestAnimationFrame(frame);
