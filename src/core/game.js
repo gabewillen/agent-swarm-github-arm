@@ -1,6 +1,6 @@
 // Quorum Run's rules: the state (DESIGN.md §5), one step of the game
 // (§6), and the events a step reports (§7). Pure core code: no DOM, no
-// Math.random -- randomness comes only from the state's seed through the
+// clock, and no source of chance but the state's own seed, drawn through
 // PRNG of src/core/rng.js.
 //
 // Ownership note: this module is shared. Steps 1 to 9 of §6 (this file's
