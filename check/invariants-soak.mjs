@@ -1,14 +1,16 @@
 // agent-23's integration soak, area 5 (invariants + statistics), run like:
-//   node check/invariants-soak.mjs [seeds] [stepCap]
+//   node check/invariants-soak.mjs [seeds] [stepCap]   or  generated [seeds] [stepCap]
 // It plays full campaigns of the shipped LEVELS through the bot and, every
 // step, chains the state through checkState, the stats fold, the replay
 // round trip, and the achievements check. A nonzero exit means a hole.
 // Pure harness: the modules under src/ stay the only game code it loads.
 
-const seeds = Number.isInteger(Number(process.argv[2])) && Number(process.argv[2]) > 0
-  ? Number(process.argv[2]) : 20;
-const stepCap = Number.isInteger(Number(process.argv[3])) && Number(process.argv[3]) > 0
-  ? Number(process.argv[3]) : 2000;
+const args = process.argv.slice(2).filter((a) => a !== 'generated');
+const generated = process.argv.includes('generated');
+const seeds = Number.isInteger(Number(args[0])) && Number(args[0]) > 0 ? Number(args[0]) : 20;
+const stepCap = Number.isInteger(Number(args[1])) && Number(args[1]) > 0 ? Number(args[1]) : 2000;
+// `generated` plays freshly generated levels (§19) instead of the shipped
+// ones: ``node check/invariants-soak.mjs generated 16 1200``.
 
 const load = async (rel) => import(new URL(`../src/${rel}`, import.meta.url).href);
 const { init, step } = await load('core/game.js');
@@ -16,6 +18,7 @@ const { checkState } = await load('core/invariants.js');
 const { statsInit, statsUpdate, statsLines } = await load('core/stats.js');
 const { botInput } = await load('core/bot.js');
 const { LEVELS } = await load('data/levels.js');
+const { generateLevel } = await load('core/generate.js');
 const { recordReplay, encodeReplay, decodeReplay, playReplay } = await load('core/replay.js');
 const { checkAchievements, ACHIEVEMENTS } = await load('core/achievements.js');
 
@@ -34,7 +37,9 @@ const endStatus = new Map();
 const ids = new Set(ACHIEVEMENTS.map((a) => a.id));
 
 for (const seed of Array.from({ length: seeds }, (_, i) => i + 1)) {
-  let s = init(seed, { levels: LEVELS });
+  const levelSeed = generated ? (seed * 7919) >>> 0 : seed;
+  const levels = generated ? [generateLevel(levelSeed)] : LEVELS;
+  let s = init(levelSeed, { levels });
   let stats = statsInit();
   const played = [];
   const unlocked = [];
@@ -72,7 +77,7 @@ for (const seed of Array.from({ length: seeds }, (_, i) => i + 1)) {
 
     // §18: the replay of every move so far re-runs to the same step.
     if (i > 0 && i % 250 === 0) {
-      const replay = recordReplay(seed, played, { levels: LEVELS });
+      const replay = recordReplay(levelSeed, played, { levels });
       const text = encodeReplay(replay);
       const back = decodeReplay(text);
       if (!back) fail(`seed ${seed} tick ${next.tick}: encoded replay ${text} did not decode`);
@@ -105,7 +110,7 @@ for (const seed of Array.from({ length: seeds }, (_, i) => i + 1)) {
 
 for (const line of fails) console.log('PROBLEM:', line);
 const parts = [...endStatus.entries()].map(([k, n]) => `${k} ${n}`).join(', ');
-console.log(`seeds ${seeds}, steps ${steps}: ${parts}; levels shipped ${ships}`);
+console.log(`seeds ${seeds}${generated ? ' (generated levels)' : ''}, steps ${steps}: ${parts}; levels shipped ${ships}`);
 console.log('stats sample:', statsLines({ ...statsInit(), moves: 12, merges: 3, bestMerge: 3, hits: 1, levels: 2 }).join(' | '));
 console.log(problems === 0 ? 'invariants soak: clean' : `invariants soak: ${problems} problems`);
 process.exit(problems === 0 ? 0 : 1);
