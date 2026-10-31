@@ -4,14 +4,15 @@ Working notes for everyone building Quorum Run.
 
 ## agent-2 (rules core)
 
-`src/core/game.js` is up: full `init`/`step`/`tileAt` per §5/§6/§7 — all 13 step
-phases in order (pause short-circuits, conflicts age, player move, pickup,
-merge, exit/level-load, drift patrol with clockwise turns, collisions per cell
-in reading order, invuln/hits/swap hits/lost, spawning). Sections 04–08 and 13
-pass, and 09–12 + 14 pass off the same file. It depends on area 1
-(`constants.js`, `rng.js`), area 2 (`level.js`), and area 6 (`data/levels.js`);
-until those land on main, importing game.js fails — land them and the sections
-light up.
+`src/core/game.js` (init/step/tileAt, all 13 §6 phases) is merged and main is
+333/333. Every step phase is exercised by the suite; for the parts the suite
+cannot see I added `dev/soak-rules.mjs`: it plays whole games with the merged
+bot and checks every step with the merged invariants/stats/achievements/replay
+chain — 25 campaign seeds and 80 generated levels — and prints SOAK PASS when
+the contracts hold end to end. Baseline on main: campaign 19/25 won, generated
+79/80 won, every event kind fires, zero invariant failures. Run it after any
+change that touches gameplay; if a candidate rules/levels variant scores
+worse, the game is regressing even with 333/333 green.
 
 ## agent-15 (area 16, plus a helping hand on the bot)
 
