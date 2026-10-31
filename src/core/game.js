@@ -5,8 +5,11 @@
 
 import {
   CARRY_MAX,
+  CLOCKWISE,
   COLORS,
+  CONFLICT_TICKS,
   DIRS,
+  INVULN_TICKS,
   PATCH_BASE,
   SAME_COLOR_BONUS,
   START_LIVES,
@@ -138,6 +141,103 @@ export function tileAt(state, x, y) {
   return row[x];
 }
 
+// §6 step 10: a drift tries its own direction, then each next direction
+// clockwise, up to four, and turns to and moves one cell in the first whose
+// target is passable to a drift: not a wall, not a hold, not the exit
+// (open or not), and no conflict on it; otherwise it stays and keeps its
+// direction. Drifts ignore the player, patches, and each other.
+const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
+function moveDrifts(state, draft) {
+  for (const d of draft.drifts) {
+    const from = CLOCKWISE.indexOf(d.dir);
+    for (let i = 0; i < 4; i++) {
+      const dir = CLOCKWISE[(from + i) % 4];
+      const [dx, dy] = DIRS[dir];
+      const x = d.x + dx;
+      const y = d.y + dy;
+      const t = tileAt(state, x, y);
+      if (t === '#' || t === 'H' || t === 'X') continue;
+      if (conflictAt(draft.conflicts, x, y)) continue;
+      d.x = x;
+      d.y = y;
+      d.dir = dir;
+      break;
+    }
+  }
+}
+
+// §6 step 11: on a tick when drifts moved, every cell in reading order
+// holding two or more drifts reverses each drift there, gains a conflict
+// unless it already has one, and adds one conflict event.
+function driftCollisions(state, draft) {
+  for (let y = 0; y < state.level.height; y++) {
+    for (let x = 0; x < state.level.width; x++) {
+      const here = draft.drifts.filter((d) => d.x === x && d.y === y);
+      if (here.length < 2) continue;
+      for (const d of here) d.dir = OPPOSITE[d.dir];
+      if (!conflictAt(draft.conflicts, x, y)) {
+        draft.conflicts.push({ x, y, ttl: CONFLICT_TICKS });
+      }
+      draft.events.push('conflict');
+    }
+  }
+}
+
+// §6 step 12: the player is hit when a drift is on their cell, or when a
+// drift that moved this step swapped cells with them. With hands full the
+// carried patches drop; otherwise a life goes, and at zero the game is
+// lost, else the player returns to the level's start with invuln.
+function resolveHit(state, draft, wasMoved) {
+  if (draft.invuln > 0) {
+    draft.invuln -= 1;
+    return;
+  }
+  const endedOnDrift = draft.drifts.some((d) => d.x === draft.player.x && d.y === draft.player.y);
+  let swapped = false;
+  if (!endedOnDrift && wasMoved) {
+    swapped = state.drifts.some((dBefore, i) => {
+      const d = draft.drifts[i];
+      return d.x === state.player.x && d.y === state.player.y
+        && dBefore.x === draft.player.x && dBefore.y === draft.player.y;
+    });
+  }
+  if (!endedOnDrift && !swapped) return;
+  if (draft.carried.length > 0) {
+    draft.carried = [];
+    draft.invuln = INVULN_TICKS;
+    draft.events.push('drop');
+    return;
+  }
+  draft.lives -= 1;
+  draft.events.push('hit');
+  if (draft.lives <= 0) {
+    draft.status = 'lost';
+    draft.events.push('lost');
+  } else {
+    draft.player = { x: state.level.start.x, y: state.level.start.y };
+    draft.invuln = INVULN_TICKS;
+  }
+}
+
+// §6 step 13: on a spawnEvery level tick, when carry plus lying patches sit
+// below the spawn count, one free spawn point gains a patch: spot first,
+// then colour, each from the seed.
+function spawn(state, draft) {
+  if (draft.levelTicks % draft.level.spawnEvery !== 0) return;
+  if (draft.patches.length + draft.carried.length >= draft.level.spawns.length) return;
+  const free = draft.level.spawns.filter((sp) =>
+    !draft.patches.some((p) => p.x === sp.x && p.y === sp.y)
+    && !(sp.x === draft.player.x && sp.y === draft.player.y)
+    && !draft.drifts.some((d) => d.x === sp.x && d.y === sp.y));
+  if (free.length === 0) return;
+  const at = rngInt(draft.seed, free.length);
+  const color = rngInt(at.seed, COLORS);
+  draft.seed = color.seed;
+  draft.patches = draft.patches.concat({ x: free[at.value].x, y: free[at.value].y, color: color.value });
+  draft.events.push('spawn');
+}
+
 // §6: step(state, input) returns the next state and never changes state
 // or anything in it. Events of the last step are in state.events.
 export function step(state, input) {
@@ -214,10 +314,25 @@ export function step(state, input) {
     return draft;
   }
 
-  // 10 to 13 (§6) — drifts move, conflicts form, hits land, and patches
-  // spawn — belong to the drift area of the swarm: they slot in here,
-  // between step 9 above and this return. `draft` is the evolving state
-  // (its tick is this step's tick) and draft.events holds the events so
-  // far. Until those land, the step returns as played out above.
+  // 10 to 13 (§6): drifts move, conflicts form, hits land, and patches
+  // spawn. The player's position before step 6 is still state.player.
+
+  // 10. Drifts move when tick % driftPeriod === 0. The copies are fresh so
+  // neither the given state nor deep-frozen parts of it change.
+  const moveTick = draft.tick % state.level.driftPeriod === 0;
+  if (moveTick) {
+    draft.drifts = state.drifts.map((d) => ({ ...d }));
+    moveDrifts(state, draft);
+  }
+
+  // 11. Collisions only on a tick when drifts moved: reading order.
+  if (moveTick) driftCollisions(state, draft);
+
+  // 12. Hits: invuln counts down and shields; a hit drops or costs a life.
+  resolveHit(state, draft, moveTick);
+
+  // 13. Spawns while still playing.
+  if (draft.status === 'playing') spawn(state, draft);
+
   return draft;
 }
