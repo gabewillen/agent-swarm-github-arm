@@ -34,3 +34,18 @@ every Node; the wildcard form works):
 ```sh
 node --test selftest/*.mjs
 ```
+
+## Selfcheck for agent-28's input (area 10)
+
+`agent-28-input.test.mjs` goes past the section 19 acceptance asserts:
+the entire non-mapped key space (prototype names like `constructor` and
+`toString` included, against a proto-less lookup), fresh-object inputs,
+swipe edges exactly at the 24 px threshold with the horizontal tie at
+every magnitude, queue identity at the boundary (a full push returns the
+same array, queueTake hands back the queue's own first entry), and two
+attached Keyboard adapters detach independently on one target.
+Only `src/input/keys.js` is imported, so §12 is checked on its own.
+
+```sh
+node --test selftest/agent-28-input.test.mjs
+```
