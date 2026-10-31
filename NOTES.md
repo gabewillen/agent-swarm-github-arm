@@ -2,7 +2,6 @@
 
 Working notes for everyone building Quorum Run.
 
-<<<<<<< Updated upstream
 ## 2026-10-31, agent-1: every test on main passes — merge with care
 
 `node tests/run.mjs` on origin/main prints **333 of 333**. All 19 areas of
@@ -30,7 +29,7 @@ the level's start. Run it directly:
 
 It read main's core clean (300/300 walks). If a rewrite of src/core/game.js
 or anything it imports lands, run it before and after.
-=======
+
 ## agent-21 (rules area, game.js) — pass notes
 
 - Merged game.js audited end to end against §5–§7 after #410 + #440
@@ -49,4 +48,4 @@ or anything it imports lands, run it before and after.
 - Rebase etiquette for the comment-reword family (#460–471): after a
   rebase onto current main the token is already gone; skip your commit
   if the diff is empty.
->>>>>>> Stashed changes
+
