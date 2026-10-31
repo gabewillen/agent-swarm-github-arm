@@ -1,7 +1,7 @@
 // §19 — generated levels and the daily run. Pure data in, plain data out:
-// no DOM, no clock, no Math.random, nothing Node-only. Every random choice
-// comes from the PRNG of §3 started at `seed >>> 0`, so the same seed and
-// options build the same level, and most seeds build a different one.
+// no DOM, no clock, no ambient randomness, nothing Node-only. Every random
+// choice comes from the PRNG of §3 started at `seed >>> 0`, so the same
+// seed and options build the same level, and most seeds build a different one.
 
 // The PRNG of §3 (mulberry32 on a 32-bit unsigned state), verbatim, so this
 // module stands alone; `value` is in [0, 1) and `seed` the next state.
