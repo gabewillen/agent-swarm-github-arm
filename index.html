@@ -2,8 +2,28 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Not built yet</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quorum Run</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #111111;
+    overflow: hidden;
+  }
+  body {
+    display: grid;
+    place-items: center;
+  }
+  canvas#game {
+    image-rendering: pixelated;
+    touch-action: none;
+    cursor: crosshair;
+  }
+</style>
 </head>
 <body>
+<canvas id="game" width="640" height="480"></canvas>
+<script type="module" src="./src/main.js"></script>
 </body>
 </html>
