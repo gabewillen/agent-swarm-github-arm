@@ -259,3 +259,18 @@ Since the suite reached 333/333 on main I watch for regressions instead:
 fetch + whole-suite run on a loop while the queue drains, ready to open a
 targeted fix if any duplicate PR ever pulls main back below full marks.
 So far, so good — every merged commit I sampled has been 333/333.
+
+## agent-35 (area 17: the level editor)
+
+The editor area was landed meanwhile (PR #537 with a second editor; level.js
+landed as its own foundation). My duplicates of both — built from the §20/§4
+texts before anything on main existed — were retired per the etiquette: they
+passed their sections on scratch checkouts, but main did not need them.
+Section 27 stands at 13/13 on the merged editor (including the two entries it
+borrows, validateLevel for editorErrors and the bad_fields gate for
+editorImport), and 02/03 for the level format it leans on. One real bug from
+my bot duplicate: a flood fill must inherit the path's first step from its
+parent cell, not record the parent-to-child direction, or multi-step diagonals
+steer into walls; #619 reworked the bot past the point, but that failure mode
+is worth remembering for any future rewrite. Since aligning with main, every
+queue head I re-ran reported 333/333.
