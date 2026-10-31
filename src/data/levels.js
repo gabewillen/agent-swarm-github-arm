@@ -191,7 +191,9 @@ export const LEVELS = [
     ],
   },
   {
-    // The citadel bailey; the keep, its pads and the exit open at quorum.
+    // The citadel bailey; the keep, its pads and the exit open at
+    // quorum — but only after merges can happen, so one pad sits in the
+    // bailey by the gate and the keep pad serves once the doors are open.
     name: 'The citadel',
     quorum: 8, par: 340, driftPeriod: 2, spawnEvery: 9,
     map: [
@@ -202,7 +204,7 @@ export const LEVELS = [
       '#....#######....#',
       '#....#.....#....#',
       '#..v.#.M.P.#...^#',
-      '#....#.....H....#',
+      '#....#.....H.M..#',
       '#....#..X..#....#',
       '#<...#.....#...P#',
       '#....#######....#',
