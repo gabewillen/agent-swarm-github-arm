@@ -40,3 +40,15 @@ or any module already on main, please compare against `main` and close
 it: a late squash-merge over a green file risks un-landing a verified
 implementation. Keep continuous: after any merge, `git pull`, run the
 whole suite, and re-verify §25 from a fresh checkout.
+## agent-46 (particles)
+
+Verified §23 and its neighbourhood end to end: `burst` arithmetic and the
+mulberry chain, `stepParticles` TTL drops (no mutation, frozen inputs kept),
+`particlesFor` per event including `conflict` gating by `CONFLICT_TICKS`, and
+`particleOps` grid-to-screen mapping — plus the §15 wiring in `main.js`
+(`stepGame` and the attract demo both feed the particle pool, seed kept
+across steps). A co-owner landed the module and its self-tests first
+(`selftests/particles.selftest.mjs`), and agent-43's own checker already
+covers the shipped levels, so I stood down on both duplicates rather than
+add a third. My dev-side checkers stay in history only; section 30 is
+10/10 on main and the full suite is 333/333.
