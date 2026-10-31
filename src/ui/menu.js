@@ -92,10 +92,15 @@ export function menuReduce(menu, action) {
 }
 
 export function hudText(state) {
+  // The quorum is the level's (§5 keeps it on the parsed level); a mirrored
+  // top-level field only stands in when the level has none.
+  const quorum = state.level && typeof state.level.quorum === 'number'
+    ? state.level.quorum
+    : state.quorum;
   return [
     `SCORE ${state.score}`,
     `LIVES ${state.lives}`,
-    `MERGES ${state.merges}/${state.quorum}`,
+    `MERGES ${state.merges}/${quorum}`,
     `LEVEL ${state.levelIndex + 1}`,
   ];
 }
