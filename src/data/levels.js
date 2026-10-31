@@ -1,0 +1,153 @@
+// The shipped levels (DESIGN.md §10): at least ten, first to last in
+// rising difficulty, the first without drifts, corridors, hold doors
+// that gate whole regions, and merge pads the route has to respect.
+// Quorum at most 20, par at least 30 for every level.
+
+export const LEVELS = [
+  {
+    name: 'First merge',
+    quorum: 3, par: 120, driftPeriod: 2, spawnEvery: 20,
+    map: [
+      '#########',
+      '#@.P...X#',
+      '#.......#',
+      '#P..M..P#',
+      '#########',
+    ],
+  },
+  {
+    name: 'Corner store',
+    quorum: 4, par: 130, driftPeriod: 2, spawnEvery: 20,
+    map: [
+      '##########',
+      '#@P.M..PX#',
+      '#.......##',
+      '#..####..#',
+      '#..#..#..#',
+      '#M.......#',
+      '##########',
+    ],
+  },
+  {
+    name: 'Two rooms',
+    quorum: 4, par: 130, driftPeriod: 2, spawnEvery: 18,
+    map: [
+      '##########',
+      '#@PP.#..P#',
+      '#....#...#',
+      '#M...H.M.#',
+      '#....#..X#',
+      '#P...#...#',
+      '##########',
+    ],
+  },
+  {
+    name: 'Night patrol',
+    quorum: 4, par: 130, driftPeriod: 2, spawnEvery: 16,
+    map: [
+      '##########',
+      '#@P.M..PX#',
+      '#.>...v..#',
+      '#P....M..#',
+      '#.......P#',
+      '##########',
+    ],
+  },
+  {
+    name: 'The yard',
+    quorum: 5, par: 140, driftPeriod: 2, spawnEvery: 16,
+    map: [
+      '###########',
+      '#@P.P.M..X#',
+      '#.......^.#',
+      '#..####...#',
+      '#..#M.#.P.#',
+      '#..#.##...#',
+      '#P.<......#',
+      '###########',
+    ],
+  },
+  {
+    name: 'Long haul',
+    quorum: 6, par: 150, driftPeriod: 2, spawnEvery: 14,
+    map: [
+      '############',
+      '#@P.P.M..PX#',
+      '#..........#',
+      '#..>....M..#',
+      '#..........#',
+      '#P....<..P.#',
+      '############',
+    ],
+  },
+  {
+    name: 'Crossfire',
+    quorum: 6, par: 150, driftPeriod: 2, spawnEvery: 14,
+    map: [
+      '###########',
+      '#@P.M..P.X#',
+      '#.>.<.....#',
+      '#.........#',
+      '#....M.P..#',
+      '#.........#',
+      '#.........#',
+      '###########',
+    ],
+  },
+  {
+    name: 'Hold the line',
+    quorum: 6, par: 160, driftPeriod: 2, spawnEvery: 14,
+    map: [
+      '###########',
+      '#@PP.#.P.X#',
+      '#....H....#',
+      '#M...#.M..#',
+      '#....H....#',
+      '#P...#.P..#',
+      '#....H....#',
+      '###########',
+    ],
+  },
+  {
+    name: 'The vault',
+    quorum: 7, par: 160, driftPeriod: 2, spawnEvery: 12,
+    map: [
+      '###########',
+      '#@P..H.P.X#',
+      '#....H....#',
+      '#.M..H.M..#',
+      '#....H....#',
+      '#.....^...#',
+      '#.P.<...P.#',
+      '###########',
+    ],
+  },
+  {
+    name: 'Gauntlet',
+    quorum: 8, par: 170, driftPeriod: 2, spawnEvery: 12,
+    map: [
+      '############',
+      '#@P...HM.PX#',
+      '#...>.v....#',
+      '#.M......M.#',
+      '#...^..<...#',
+      '#P....M..P.#',
+      '############',
+    ],
+  },
+  {
+    name: 'Far station',
+    quorum: 9, par: 180, driftPeriod: 2, spawnEvery: 12,
+    map: [
+      '##############',
+      '#@P.P.....P.X#',
+      '#......v.....#',
+      '#.M..........#',
+      '#.....>.<....#',
+      '#..M.....M...#',
+      '#....^.....P.#',
+      '#P.......M...#',
+      '##############',
+    ],
+  },
+];
