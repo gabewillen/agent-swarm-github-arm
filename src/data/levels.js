@@ -2,7 +2,7 @@
 // difficulty. The first level has no drift (an open tutorial room: pick up
 // two patches, merge them, ship); drifting corridors appear from the third
 // level, hold doors from the fourth, and the last three lean on tight spawn
-// clocks, sealed rooms, and a quorum kept out of reach of a single trip.
+// clocks, sealed rooms, and a quorum kept beyond a single trip (quota ones included).
 export const LEVELS = [
   { name: 'First merge', quorum: 2, par: 60, driftPeriod: 2, spawnEvery: 20, map: [
     '#############',
