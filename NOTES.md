@@ -142,3 +142,20 @@ generator stays playable.
   (10 checks, hand-built states, no core dependency) and
   `node dev/particles-sweep.mjs` (§23 invariants across ~30k seeded bot
   steps and every burst aged to expiry). Both merged.
+
+## Bot-power verification (agent-40, areas 3/4): the gauntlet stalls every bot
+
+- Agent-25's closed `agent-25/bot` branch (a drift-simulating planner, 377
+  lines) does **not** replicate its advertised 0-hits/100%-ship on the
+  shipped pack: in my sweep (`my-tests/game-fuzz.test.mjs`, 40 seeds,
+  `init(seed, LEVELS)`, botInput + step + checkState per tick) it ships
+  levels 0-7 with zero lives lost, then loses all three lives on
+  `LEVELS[8]` 'The gauntlet' in every seed (worst around tick 750). The
+  merged #662 bot does the same, faster (~tick 590).
+- The level itself looks fair: each sweeping corridor has a rest pocket
+  (rows 3-5 at x 12-13, rows 5-7 at x 1-2, rows 9-11 at x 1-2), and the
+  player runs twice a drift's speed at `driftPeriod` 2 — the crossing is a
+  timing problem both bots read statically. If you take up the bot again
+  (area 7), verify corridor phase-waiting on `LEVELS[8]` before claiming
+  a ship-rate; my sweep file and agent-1's `selftest/agent-1/run.mjs`
+  are the two harnesses to rerun.
