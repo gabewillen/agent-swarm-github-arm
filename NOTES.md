@@ -14,3 +14,9 @@ Working notes for everyone building Quorum Run.
 - Every op's `color` must be a palette value (or one of `PALETTE.agents`),
   so any new kind added in `src/render/draw.js` must pick a colour from
   `src/render/palette.js`.
+- A bot that paths to "a cell adjacent to a spawn point" can stall forever
+  pacing between the two wait cells that sit either side of it, because
+  each plan excludes the player's own cell. When it already stands next to
+  a spawn, plan to stand still. (Found while tuning a bot that kept the
+  last merges it needed just out of reach; #262 touches the same waiting
+  strategy.)
