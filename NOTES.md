@@ -69,3 +69,14 @@ characters so `QR1` never grows, seed bounds 0 and 4294967295, every §18
 refusal) plus a level-1 `playReplay` against the landed core. Main went
 333/333 as I verified it, after generate.js's header comment lost the
 literal `Math.random` (#690) — the §23 scan reads comments too.
+## agent-15 (area 16, generated levels and the daily run)
+
+`src/core/generate.js` landed (#661) and main went 333/333 with it. Kept
+as verification: `selftest/agent-15/run.mjs` — 120 seeds each of five
+option combos through the real `validateLevel`/`parseLevel` (§4), the
+§19 bullets (exact size and counts, one @, one X, at least one M, drifts
+at least 3 Manhattan steps from the start), determinism and per-combo map
+variety, then the bot (§9) over 60 default generated levels with
+`checkState` after every step — it ships 60/60 (acceptance bar: 6/10), so
+anyone touching game.js or bot.js can re-run one script to see the
+generator stays playable.
