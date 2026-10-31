@@ -1,6 +1,7 @@
 // Quorum Run: generated levels and the daily run (DESIGN.md §19).
 // Pure core: a level is built only from the PRNG of §3 started at
-// seed >>> 0 — no clock, no DOM, no Math.random, no Node-only APIs.
+// seed >>> 0 — no clock, no DOM, nothing from an ambient random source,
+// no Node-only APIs.
 
 import { rngInt } from './rng.js';
 
