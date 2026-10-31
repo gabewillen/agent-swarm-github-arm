@@ -1,6 +1,6 @@
 // The seeded PRNG of Quorum Run (DESIGN.md §3): mulberry32 on a 32-bit
 // unsigned state. Every draw returns { value, seed } so the state carries
-// the next seed; no ambient randomness anywhere in the core.
+// the next seed; no direct random calls anywhere in the core.
 
 export function rngNext(seed) {
   const t = (seed + 0x6D2B79F5) >>> 0; // the next state
