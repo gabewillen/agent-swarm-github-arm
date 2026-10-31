@@ -1,258 +1,184 @@
-// §19 — generated levels and the daily run. Pure data in, plain data out:
-// no DOM, no clock, no Math.random, nothing Node-only. Every random choice
-// comes from the PRNG of §3 started at `seed >>> 0`, so the same seed and
-// options build the same level, and most seeds build a different one.
+// Quorum Run — generated levels and the daily run (DESIGN.md §19).
+// Pure: every draw comes from the mulberry32 PRNG of §3, started at
+// seed >>> 0, and the same seed and options build the same level.
 
-// The PRNG of §3 (mulberry32 on a 32-bit unsigned state), verbatim, so this
-// module stands alone; `value` is in [0, 1) and `seed` the next state.
-function rngValue(state) {
-  const t = (state + 0x6D2B79F5) >>> 0;
-  let r = Math.imul(t ^ (t >>> 15), t | 1);
-  r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
-  return { value: ((r ^ (r >>> 14)) >>> 0) / 4294967296, seed: t };
-}
+import { rngInt } from './rng.js';
 
-const FNV_BASIS = 0x811c9dc5;
-const FNV_PRIME = 0x01000193;
-
-// `hashSeed(text)` is 32-bit FNV-1a over the string's UTF-16 code units:
-// start at the basis; for each code unit, xor it in, then multiply by the
-// prime and keep the unsigned 32 bits.
+// FNV-1a over the string's UTF-16 code units, keeping the state unsigned.
 export function hashSeed(text) {
-  let h = FNV_BASIS;
-  const s = String(text);
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, FNV_PRIME) >>> 0;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h = h ^ text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
   }
   return h >>> 0;
 }
 
-const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/;
-
-// `dailySeed(date)` hashes 'quorum-run:' + `date`; a string that is not of
-// the YYYY-MM-DD shape, or whose month or day is out of range, gives null.
+// The daily run's seed is a hash of the calendar date string.
 export function dailySeed(date) {
-  if (typeof date !== 'string' || !DATE_SHAPE.test(date)) return null;
-  const month = Number(date.slice(5, 7));
-  const day = Number(date.slice(8, 10));
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
   return hashSeed('quorum-run:' + date);
 }
 
-// Drift characters in DIRS order (up, right, down, left).
-const DIR_CHARS = ['^', '>', 'v', '<'];
-const DEFAULTS = { width: 15, height: 11, drifts: 2, spawns: 4, quorum: 5 };
+const MANHATTAN = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 
-function optionInt(raw, fallback, low, high, what) {
-  const v = raw === undefined ? fallback : raw;
-  if (!Number.isInteger(v)) {
-    throw new RangeError(`generateLevel: ${what} must be an integer, got ${String(raw)}`);
+function shuffled(s, cells) {
+  const out = cells.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const draw = rngInt(s, i + 1);
+    s = draw.seed;
+    const j = draw.value;
+    const swap = out[i];
+    out[i] = out[j];
+    out[j] = swap;
   }
-  if (v < low || v > high) {
-    throw new RangeError(`generateLevel: ${what} ${v} is out of range ${low}..${high}`);
-  }
-  return v;
+  return { cells: out, seed: s };
 }
 
-// The layout is an open floor with a sparse scatter of single-cell wall
-// pillars. Pillars are never 4-adjacent and never split the floor, so the
-// player's start reaches every pad, spawn point, and the exit; drifts start
-// at least 3 steps away, and the exit at least 3 from the start. The one
-// draw order below fixes determinism.
-export function generateLevel(seed, options) {
-  const o = options ?? {};
-  const width = optionInt(o.width, DEFAULTS.width, 7, 32, 'width');
-  const height = optionInt(o.height, DEFAULTS.height, 7, 24, 'height');
-  const drifts = optionInt(o.drifts, DEFAULTS.drifts, 0, Infinity, 'drifts');
-  const spawns = optionInt(o.spawns, DEFAULTS.spawns, 1, Infinity, 'spawns');
-  const quorum = optionInt(o.quorum, DEFAULTS.quorum, 1, Infinity, 'quorum');
-
-  const iw = width - 2; // interior cells across
-  const ih = height - 2; // interior cells down
-  const area = iw * ih;
-  const pillarMax = Math.floor(area / 32);
-  if (pillarMax + drifts + spawns + 4 > area) {
-    throw new RangeError(`generateLevel: ${width}x${height} is too small for ${drifts} drifts and ${spawns} spawn points`);
+// Every cell inside the border, an interior of (width-2) by (height-2).
+function interiorCells(width, height) {
+  const cells = [];
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) cells.push({ x, y });
   }
+  return cells;
+}
+
+// Can every special cell still be reached from the '@' through cells that
+// are not '#'? One flood fill decides whether a wall candidate may stay.
+function allReachable(grid, width, height, from, targets) {
+  const seen = new Set([from.y + ':' + from.x]);
+  const queue = [from];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+      const nx = cur.x + dx;
+      const ny = cur.y + dy;
+      const key = ny + ':' + nx;
+      if (seen.has(key)) continue;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      if (grid[ny][nx] === '#') continue;
+      seen.add(key);
+      queue.push({ x: nx, y: ny });
+    }
+  }
+  return targets.every((t) => seen.has(t.y + ':' + t.x));
+}
+
+export function generateLevel(seed, options) {
+  const o = options === null || options === undefined ? {} : options;
+  const width = o.width === undefined ? 15 : o.width;
+  const height = o.height === undefined ? 11 : o.height;
+  const drifts = o.drifts === undefined ? 2 : o.drifts;
+  const spawns = o.spawns === undefined ? 4 : o.spawns;
+  const quorum = o.quorum === undefined ? 5 : o.quorum;
+
+  // Sizes are clamped 7..32 by 7..24 and anything else is a RangeError.
+  if (!Number.isInteger(width) || width < 7 || width > 32) throw new RangeError('width must be an integer from 7 to 32');
+  if (!Number.isInteger(height) || height < 7 || height > 24) throw new RangeError('height must be an integer from 7 to 24');
+  if (!Number.isInteger(drifts) || drifts < 0) throw new RangeError('drifts must be a non-negative integer');
+  if (!Number.isInteger(spawns) || spawns < 1) throw new RangeError('spawns must be a positive integer');
+  if (!Number.isInteger(quorum) || quorum < 1) throw new RangeError('quorum must be a positive integer');
+
+  const cells = interiorCells(width, height);
+  if (2 + 1 + spawns + drifts > cells.length) throw new RangeError('not enough room for that many drifts and spawns');
 
   let s = seed >>> 0;
-  const draw = (n) => {
-    const r = rngValue(s);
-    s = r.seed;
-    return Math.floor(r.value * n);
-  };
-
-  // Free interior cells, in reading order (map coordinates x: 1..iw, y: 1..ih).
-  const free = [];
-  for (let y = 1; y <= ih; y++) {
-    for (let x = 1; x <= iw; x++) free.push({ x, y });
-  }
-  const keyOf = (c) => (c.y - 1) * iw + (c.x - 1);
-  const pillarKeys = new Set();
-  const pillars = [];
-  const pillarAt = (x, y) => x >= 1 && x <= iw && y >= 1 && y <= ih && pillarKeys.has(keyOf({ x, y }));
-
-  // True when the floor (interior minus pillars) is one 4-connected piece,
-  // so the §4 unreachable check can never fire for the level.
-  const floorConnected = () => {
-    let source = -1;
-    for (let i = 0; i < area && source < 0; i++) {
-      if (!pillarKeys.has(i)) source = i;
-    }
-    if (source < 0) return false;
-    const seen = new Set([source]);
-    const stack = [source];
-    while (stack.length) {
-      const i = stack.pop();
-      const x = i % iw;
-      const y = (i - x) / iw;
-      const near = [];
-      if (x > 0) near.push(i - 1);
-      if (x < iw - 1) near.push(i + 1);
-      if (y > 0) near.push(i - iw);
-      if (y < ih - 1) near.push(i + iw);
-      for (const n of near) {
-        if (pillarKeys.has(n) || seen.has(n)) continue;
-        seen.add(n);
-        stack.push(n);
-      }
-    }
-    return seen.size === area - pillarKeys.size;
-  };
-
-  // Pillars: one per accepted cell, never 4-adjacent to another, and only
-  // when the floor stays connected. Each attempt is exactly one draw.
-  const pillarCount = draw(pillarMax + 1);
-  for (let i = 0; i < pillarCount; i++) {
-    for (let attempt = 0; attempt < 24 && free.length > 0; attempt++) {
-      const c = free[draw(free.length)];
-      const adjacent = pillarAt(c.x - 1, c.y) || pillarAt(c.x + 1, c.y)
-        || pillarAt(c.x, c.y - 1) || pillarAt(c.x, c.y + 1);
-      if (adjacent) continue;
-      pillarKeys.add(keyOf(c));
-      if (floorConnected()) {
-        free.splice(free.indexOf(c), 1);
-        pillars.push(c);
-        break;
-      }
-      pillarKeys.delete(keyOf(c));
-    }
-  }
-
-  const dist = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-  // Pick and remove a free cell; a distance filter that nothing satisfies
-  // falls back to any free cell (unreachable for the layouts above).
-  const take = (filter) => {
-    let list = filter ? free.filter(filter) : free;
-    if (list.length === 0) list = free;
-    const c = list[draw(list.length)];
-    free.splice(free.indexOf(c), 1);
-    return c;
-  };
-
-  const start = take();
-  const exit = take((c) => dist(c, start) >= 3);
-  const padCount = 1 + draw(2); // one or two merge pads
-  const pads = [];
-  for (let i = 0; i < padCount; i++) pads.push(take((c) => dist(c, start) >= 2));
-  const spawnCells = [];
-  for (let i = 0; i < spawns; i++) spawnCells.push(take());
-  const driftDefs = [];
-  for (let i = 0; i < drifts; i++) {
-    const c = take((c) => dist(c, start) >= 3);
-    driftDefs.push({ x: c.x, y: c.y, dir: DIR_CHARS[draw(4)] });
-  }
-
   const grid = [];
-  for (let y = 0; y < ih; y++) grid.push(new Array(iw).fill('.'));
-  const put = (c, ch) => { grid[c.y - 1][c.x - 1] = ch; };
-  for (const c of pillars) put(c, '#');
-  put(start, '@');
-  put(exit, 'X');
-  for (const c of pads) put(c, 'M');
-  for (const c of spawnCells) put(c, 'P');
-  for (const d of driftDefs) put(d, d.dir);
+  for (let y = 0; y < height; y++) {
+    const row = new Array(width).fill('.');
+    for (let x = 0; x < width; x++) {
+      if (y === 0 || y === height - 1 || x === 0 || x === width - 1) row[x] = '#';
+    }
+    grid.push(row);
+  }
 
-  const map = ['#'.repeat(width)];
-  for (let y = 0; y < ih; y++) map.push('#' + grid[y].join('') + '#');
-  map.push('#'.repeat(width));
+  // The '@' first, anywhere in the interior.
+  let order = shuffled(s, cells);
+  s = order.seed;
+  const at = order.cells[0];
+  grid[at.y][at.x] = '@';
 
-  assertSane(map, spawns, drifts);
+  const placed = [at];
+  const taken = new Set([at.y + ':' + at.x]);
+  const isFree = (c) => !taken.has(c.y + ':' + c.x);
 
+  // The exit, preferring a cell well away from the start.
+  order = shuffled(s, cells);
+  s = order.seed;
+  let spot = order.cells.find((c) => isFree(c) && MANHATTAN(c, at) >= 5);
+  if (!spot) spot = order.cells.find(isFree);
+  if (!spot) throw new RangeError('not enough room for the exit');
+  const exit = spot;
+  grid[exit.y][exit.x] = 'X';
+  placed.push(exit);
+  taken.add(exit.y + ':' + exit.x);
+
+  // A merge pad a walk away from the start.
+  order = shuffled(s, cells);
+  s = order.seed;
+  spot = order.cells.find((c) => isFree(c) && MANHATTAN(c, at) >= 3);
+  if (!spot) spot = order.cells.find(isFree);
+  if (!spot) throw new RangeError('not enough room for the merge pad');
+  const merge = spot;
+  grid[merge.y][merge.x] = 'M';
+  placed.push(merge);
+  taken.add(merge.y + ':' + merge.x);
+
+  // Patch spawn points, kept a step apart where the map allows.
+  const patchSpots = [];
+  for (let i = 0; i < spawns; i++) {
+    order = shuffled(s, cells);
+    s = order.seed;
+    let pick = null;
+    for (const c of order.cells) {
+      if (!isFree(c)) continue;
+      if (patchSpots.every((p) => MANHATTAN(p, c) >= 2)) { pick = c; break; }
+    }
+    if (!pick) pick = order.cells.find(isFree);
+    if (!pick) throw new RangeError('not enough room for the spawn points');
+    patchSpots.push(pick);
+    grid[pick.y][pick.x] = 'P';
+    placed.push(pick);
+    taken.add(pick.y + ':' + pick.x);
+  }
+
+  // Internal walls: sparse pillars, kept only when every special cell
+  // stays reachable from the '@'.
+  const wallTarget = Math.max(1, Math.floor(cells.length / 12));
+  const freeFloor = cells.filter(isFree);
+  order = shuffled(s, freeFloor);
+  s = order.seed;
+  let walls = 0;
+  for (const c of order.cells) {
+    if (walls >= wallTarget) break;
+    const keep = grid[c.y][c.x];
+    if (keep !== '.') continue;
+    grid[c.y][c.x] = '#';
+    if (allReachable(grid, width, height, at, placed)) walls++;
+    else grid[c.y][c.x] = keep;
+  }
+
+  // Drift starts on floor cells, at least 3 steps (Manhattan) from '@'.
+  const driftSpots = [];
+  order = shuffled(s, cells);
+  s = order.seed;
+  for (const c of order.cells) {
+    if (driftSpots.length >= drifts) break;
+    if (grid[c.y][c.x] !== '.') continue;
+    if (MANHATTAN(c, at) < 3) continue;
+    driftSpots.push(c);
+    grid[c.y][c.x] = 'v';
+  }
+  if (driftSpots.length < drifts) throw new RangeError('not enough room for the drift starts');
+
+  const map = grid.map((row) => row.join(''));
   return {
-    name: `Generated ${seed >>> 0}`,
+    name: 'Generated ' + (seed >>> 0),
     quorum,
-    par: 30 + width + height + 2 * quorum, // at least 30
+    par: 30 + width * 10 + height * 6,
     driftPeriod: 2,
     spawnEvery: 12,
     map,
   };
-}
-
-// The map above meets §4's shape rules by construction; this only turns a
-// generation bug into a loud failure instead of a quietly bad level.
-function assertSane(map, spawnCount, driftCount) {
-  const fail = (why) => { throw new Error(`generateLevel: broken map (${why})`); };
-  const h = map.length;
-  const w = map[0].length;
-  if (h < 1 || w < 1 || !map.every((row) => typeof row === 'string' && row.length === w)) {
-    fail('shape');
-  }
-  let starts = 0;
-  let exits = 0;
-  let pads = 0;
-  let spawns = 0;
-  let drifts = 0;
-  let sx = 0;
-  let sy = 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const ch = map[y][x];
-      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) {
-        if (ch !== '#') fail('border');
-      } else if (ch === '@') {
-        starts++;
-        sx = x;
-        sy = y;
-      } else if (ch === 'X') {
-        exits++;
-      } else if (ch === 'M') {
-        pads++;
-      } else if (ch === 'P') {
-        spawns++;
-      } else if ('^>v<'.includes(ch)) {
-        drifts++;
-      } else if (ch !== '.' && ch !== '#') {
-        fail(`char ${JSON.stringify(ch)}`);
-      }
-    }
-  }
-  if (starts !== 1 || exits !== 1 || pads < 1 || spawns !== spawnCount || drifts !== driftCount) {
-    fail('counts');
-  }
-  // Every P, M, and X must be reachable from the @ through non-wall cells.
-  const w2 = w;
-  const seen = new Set([sy * w2 + sx]);
-  const stack = [sy * w2 + sx];
-  while (stack.length) {
-    const i = stack.pop();
-    const x = i % w2;
-    const y = (i - x) / w2;
-    for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
-      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-      const j = ny * w2 + nx;
-      if (seen.has(j) || map[ny][nx] === '#') continue;
-      seen.add(j);
-      stack.push(j);
-    }
-  }
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const ch = map[y][x];
-      if ((ch === 'P' || ch === 'M' || ch === 'X') && !seen.has(y * w2 + x)) {
-        fail(`unreachable ${ch} at ${x},${y}`);
-      }
-    }
-  }
 }
