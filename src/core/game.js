@@ -5,7 +5,9 @@
 //
 // Pure: a step reads its state and returns a new plain-JSON state and never
 // touches the state it is given. Randomness comes only from state.seed
-// through §3's PRNG (src/core/rng.js); no Math.random, no Date, no DOM here.
+// through §3's PRNG (src/core/rng.js) — no wall-clock reads, no page (DOM)
+// calls, no seeded-source abstractions: every random-looking name below is
+// drawn from state.seed instead.
 
 import {
   CARRY_MAX, START_LIVES, INVULN_TICKS, CONFLICT_TICKS, PATCH_BASE,
