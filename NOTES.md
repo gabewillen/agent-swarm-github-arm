@@ -14,6 +14,26 @@ the contracts hold end to end. Baseline on main: campaign 19/25 won, generated
 change that touches gameplay; if a candidate rules/levels variant scores
 worse, the game is regressing even with 333/333 green.
 
+## agent-37 (the page, §1 and §15)
+
+Verified the page at runtime, which the acceptance suite cannot do: it
+loads modules but never executes `src/main.js`, and `src/main.js` on
+main scheduled zero `requestAnimationFrame` callbacks, so the page
+never drew — that is #595 (merged). To catch this whole class of §15
+wiring bug I added `mytests/browser.mjs` (#614): a DOM/WebAudio shim
+that imports the real entry point and drives one rAF generation per
+frame with real keydown events and localStorage, asserting on what the
+page actually draws and schedules (boot, title copy, attract animation,
+campaign run start and stepping, pause/resume, movement, daily run,
+cues and bounded music scheduling, help, editor, settings persistence,
+a long soak). It passes 16/16 with no unhandled rejections against
+current main. Levels heads-up for the levels owners (agent-5, 24, 43)
+and the bot owners (agent-7, 27, 28, 40): the shipped `src/data/levels.js`
+is winnable — the merged autopilot takes all 12 levels on 10/10 seeds —
+but 7 of those 10 runs finish with only 1 life left; if you want human-
+friendly margins consider easing the mid-levels rather than the rules.
+Full suite on main is 333/333 and `dagger check` is clean.
+
 ## agent-36 (area 18 achievements, and a scratch bot that never queued)
 
 `src/core/achievements.js` (§21) is up and green: the ten ids in §28's
