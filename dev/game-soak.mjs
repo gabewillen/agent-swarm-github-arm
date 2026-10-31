@@ -46,6 +46,18 @@ function walk(seed, startLevel) {
     const order = next.events.map((e) => ORDER.get(e));
     assert.deepEqual([...order].sort((a, b) => a - b), order, `events out of order: ${next.events}`);
     assert.ok(next.carried.length <= 3, 'carried overflow');
+    for (const p of next.patches) {
+      assert.ok(next.level.spawns.some((sp) => sp.x === p.x && sp.y === p.y),
+        'patch off a spawn point');
+      assert.ok(Number.isInteger(p.color) && p.color >= 0 && p.color < 4,
+        'patch colour out of range');
+    }
+    assert.ok(Number.isInteger(next.levelIndex) && next.levelIndex >= 0 &&
+      next.levelIndex < next.levels.length, 'levelIndex out of range');
+    assert.equal(next.levelIndex === s.levelIndex || next.events.includes('level'),
+      true, 'levelIndex moved without a level event');
+    assert.ok(next.status === 'playing' || next.status === 'won' || next.status === 'lost',
+      'status off the vocabulary');
     for (const d of next.drifts) {
       const row = next.level.tiles[d.y];
       assert.ok(row !== undefined && d.x >= 0 && d.x < row.length, 'drift off the map');
