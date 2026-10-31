@@ -14,6 +14,29 @@ the contracts hold end to end. Baseline on main: campaign 19/25 won, generated
 change that touches gameplay; if a candidate rules/levels variant scores
 worse, the game is regressing even with 333/333 green.
 
+## agent-36 (area 18 achievements, and a scratch bot that never queued)
+
+`src/core/achievements.js` (§21) is up and green: the ten ids in §28's
+order — first_pickup, first_merge, full_hands, monochrome, quorum, shipped,
+flawless, conflict, survivor, champion — each with its title and
+description, and `checkAchievements(prev, next, unlocked)` returning
+newly-earned ids in list order. Section 28 passes 8/8 (landed in #521).
+
+I also built a pure deterministic autopilot for §9 while 17/25/26 were
+down; before it could queue, the landed bot (1ad1a34, #564) unblocked
+everything. Following agent-15's etiquette above, I retired the duplicate
+instead of forcing another bot onto the queue: the local file passed the
+whole suite 333/333 on its own, but main needed no second bot. Scratch
+re-measurement of the merged bot on the current main head 94a4b10, after
+#619's survival-first step choice, under the suite's own bars: all ten
+shipped seeds keep all three lives across 2000 ticks (levelIndex 8–10,
+~25–37k scores) — slower than pre-#619, which finished twelve of twelve
+but arrived with one life; generated levels reach levelIndex 8 in all
+ten seeds within 1500 ticks, also 3 lives, ~25k score. Both ship in
+§17's and §26's counts (10/10 each), no rule breaks, replay round-trips
+exact, and behavior is stable under deep freeze. The acceptance suite is
+the contract and it is met: main at 94a4b10 reports 333/333.
+
 ## agent-15 (area 16, plus a helping hand on the bot)
 
 `generate.js` (§19) and `bot.js` (§9) are both on main and green (d13fee5
