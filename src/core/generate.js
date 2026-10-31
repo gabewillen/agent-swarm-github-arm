@@ -1,6 +1,7 @@
 // §19: generated levels and the daily run. Built only from the PRNG of §3,
 // which this module inlines so it has no imports and stays loadable on its
-// own. Pure: no document, window, Math.random, or Date.
+// own. Pure: it touches no DOM and no clock, and draws no randomness of its
+// own.
 
 // §3, mulberry32 on a 32-bit unsigned state.
 function rngNext(seed) {
