@@ -24,7 +24,7 @@ export function recordReplay(seed, inputs, options) {
   const inputs_ = Array.isArray(inputs) ? inputs : [];
   return {
     seed: seed >>> 0,
-    level: options && typeof options === 'object' ? options.level : 0,
+    level: (options && typeof options === 'object' ? options.level : 0) ?? 0,
     moves: inputs_.map(charOf).join(''),
   };
 }
