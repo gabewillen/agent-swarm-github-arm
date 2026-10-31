@@ -1,7 +1,7 @@
 // State validation (DESIGN.md §8). `checkState` reads a game state and
 // returns the codes of the invariants it breaks, empty for a valid one.
-// It is pure: it never changes its argument, and it touches no DOM, no
-// clock, and no randomness of its own (a PRNG state would be uncheckable).
+// It is pure: it never changes its argument, touches no DOM, window, clock,
+// or platform RNG, and uses nothing Node-only.
 
 import { CARRY_MAX, START_LIVES, COLORS } from './constants.js';
 
