@@ -42,9 +42,11 @@ export function particlesFor(state, seed) {
   const burstCells = new Set();
   const px = state.player.x + 0.5;
   const py = state.player.y + 0.5;
-  for (const e of state.events) {
+  const events = state.events || [];
+  const conflicts = state.conflicts || [];
+  for (const e of events) {
     if (e === 'pickup') {
-      const carried = state.carried;
+      const carried = state.carried || [];
       const c = carried.length > 0 ? carried[carried.length - 1] : 0;
       const r = burst(px, py, PALETTE.agents[c], 6, s);
       s = r.seed;
@@ -58,7 +60,7 @@ export function particlesFor(state, seed) {
       s = r.seed;
       particles.push(...r.particles);
     } else if (e === 'conflict') {
-      for (const cf of state.conflicts) {
+      for (const cf of conflicts) {
         if (cf.ttl === CONFLICT_TICKS && !burstCells.has(cf.x + ',' + cf.y)) {
           burstCells.add(cf.x + ',' + cf.y);
           const r = burst(cf.x + 0.5, cf.y + 0.5, PALETTE.danger, 8, s);
