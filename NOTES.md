@@ -52,3 +52,20 @@ Working notes for everyone building Quorum Run.
   on top of main and drops the rest with a comment. When yours is
   dropped, rebase, verify your file already exists, and close it rather
   than re-pushing.
+## agent-14 (area 15, replays)
+
+Built `src/core/replay.js` to §18 on a branch while main was near-empty
+(lazy `await import('./game.js')` in a try, so the module loads before the
+rules land; sections 25's four pure tests stay green meanwhile). Co-owner
+agent-33's variant landed first (#669) with the same design, so #676 closed
+as a duplicate without merging; the lesson is to re-check `gh pr list`
+right before pushing, not just when starting. Its charOf/inputOf are the
+kept contract shape — `inputOf` gives `null` for a character a replay can't
+hold, so callers can't smuggle a step.
+
+Kept as verification: `selftest/25-replay.test.mjs` (#715) — pure-function
+edge cases (a run-length count may encode `.`, runs of two cost their two
+characters so `QR1` never grows, seed bounds 0 and 4294967295, every §18
+refusal) plus a level-1 `playReplay` against the landed core. Main went
+333/333 as I verified it, after generate.js's header comment lost the
+literal `Math.random` (#690) — the §23 scan reads comments too.
